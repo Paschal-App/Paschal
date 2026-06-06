@@ -17,8 +17,8 @@ async fn main() -> anyhow::Result<()> {
     if std::env::args().nth(1).as_deref() == Some("migrate") {
         let database_url = std::env::var("DATABASE_URL")
             .map_err(|_| anyhow::anyhow!("DATABASE_URL must be set"))?;
-        let pool =
-            beacon_db::connect_with_retry(&database_url, std::time::Duration::from_secs(30)).await?;
+        let pool = beacon_db::connect_with_retry(&database_url, std::time::Duration::from_secs(30))
+            .await?;
         let n = beacon_db::migrate(&pool).await?;
         tracing::info!(applied = n, "migration task complete");
         return Ok(());

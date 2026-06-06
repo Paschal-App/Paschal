@@ -13,8 +13,7 @@ use axum::{
 };
 use beacon_core::{
     can_transition, plan_features, public_catalog, AttachmentId, BuddyId, BuddyResponse,
-    CoStewardId, LetterId, PlanId, PrincipalId, ReleaseReason, Tier, VaultId,
-    VaultState,
+    CoStewardId, LetterId, PlanId, PrincipalId, ReleaseReason, Tier, VaultId, VaultState,
 };
 use beacon_db as db;
 use chrono::Utc;
@@ -173,7 +172,8 @@ pub async fn signup(
         Ok(s) => s,
         Err(db::DbError::NotFound) => {
             let plan = parse_plan_param(body.plan.as_deref())?;
-            db::create_subscription(&state.pool, principal.id, plan, state.config.trial_days).await?
+            db::create_subscription(&state.pool, principal.id, plan, state.config.trial_days)
+                .await?
         }
         Err(e) => return Err(e.into()),
     };
@@ -194,8 +194,12 @@ pub async fn signup(
     .await;
 
     if let Some(end) = sub.trial_end_at {
-        tx::welcome(state.notifications.as_ref(), &principal.primary_email, &end.to_rfc3339())
-            .await;
+        tx::welcome(
+            state.notifications.as_ref(),
+            &principal.primary_email,
+            &end.to_rfc3339(),
+        )
+        .await;
     }
 
     Metrics::inc(&state.metrics.signups_total);
@@ -242,7 +246,11 @@ fn plan_view(f: beacon_core::PlanFeatures) -> PlanView {
         max_vaults: f.max_vaults,
         max_letters_per_vault: f.max_letters_per_vault,
         max_trustees: f.max_trustees,
-        allowed_signals: f.allowed_signals.iter().map(|s| s.as_db_str().to_string()).collect(),
+        allowed_signals: f
+            .allowed_signals
+            .iter()
+            .map(|s| s.as_db_str().to_string())
+            .collect(),
         multi_region: f.multi_region,
         notes: f.notes.iter().map(|s| (*s).to_string()).collect(),
     }
@@ -314,7 +322,6 @@ pub async fn get_usage(
         scheduled_horizon_days: plan.scheduled_horizon_days,
     }))
 }
-
 
 // ----------------------------------------------------------------------------
 // Vaults
@@ -574,12 +581,10 @@ const VALID_LETTER_KINDS: &[&str] = &[
 
 fn validate_letter_kind(kind: Option<&str>) -> ApiResult<()> {
     match kind {
-        Some(k) if !VALID_LETTER_KINDS.contains(&k) => {
-            Err(ApiError::BadRequest(format!(
-                "unknown letter kind '{k}'; allowed: {}",
-                VALID_LETTER_KINDS.join(", ")
-            )))
-        }
+        Some(k) if !VALID_LETTER_KINDS.contains(&k) => Err(ApiError::BadRequest(format!(
+            "unknown letter kind '{k}'; allowed: {}",
+            VALID_LETTER_KINDS.join(", ")
+        ))),
         _ => Ok(()),
     }
 }
@@ -625,7 +630,10 @@ pub async fn seal_letter(
     }
 
     validate_letter_kind(body.kind.as_deref())?;
-    validate_release_mode(body.release_mode.as_deref(), body.scheduled_release_at.as_ref())?;
+    validate_release_mode(
+        body.release_mode.as_deref(),
+        body.scheduled_release_at.as_ref(),
+    )?;
 
     let sub = db::fetch_subscription(&state.pool, pid).await?;
     if !sub.state.allows_authoring() {
@@ -824,7 +832,8 @@ pub async fn upsert_signal_subscription(
         .map_err(|e| ApiError::BadRequest(format!("unknown source: {}", e)))?;
     let weight = body.weight.unwrap_or_else(|| source.default_weight());
     let enabled = body.enabled.unwrap_or(true);
-    let sub = db::upsert_signal_subscription(&state.pool, vault.id, source, weight, enabled).await?;
+    let sub =
+        db::upsert_signal_subscription(&state.pool, vault.id, source, weight, enabled).await?;
     Ok(Json(SignalSubView {
         source: sub.source.as_db_str().to_string(),
         weight: sub.weight,
@@ -880,7 +889,9 @@ pub async fn apple_icloud_enrol(
 ) -> ApiResult<Json<AppleEnrolResp>> {
     let pid = current_principal(&state, &headers).await?;
     if body.installation_id.is_empty() || body.installation_id.len() > 128 {
-        return Err(ApiError::BadRequest("installation_id length invalid".into()));
+        return Err(ApiError::BadRequest(
+            "installation_id length invalid".into(),
+        ));
     }
 
     // Generate a 32-byte secret. The Shortcut will store this and HMAC each ping.
@@ -924,15 +935,17 @@ pub async fn apple_icloud_ping(
         )));
     }
 
-    let (principal_id, secret) =
-        db::fetch_apple_shortcut_sub(&state.pool, &body.installation_id)
-            .await?
-            .ok_or(ApiError::NotFound)?;
+    let (principal_id, secret) = db::fetch_apple_shortcut_sub(&state.pool, &body.installation_id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
 
     let provided = STANDARD
         .decode(body.signature.as_bytes())
         .map_err(|_| ApiError::BadRequest("signature must be base64".into()))?;
-    let expected = hmac_sha256(&secret, &format!("{}|{}", body.installation_id, body.timestamp));
+    let expected = hmac_sha256(
+        &secret,
+        &format!("{}|{}", body.installation_id, body.timestamp),
+    );
     if !constant_time_eq(&provided, &expected) {
         return Err(ApiError::Unauthorised);
     }
@@ -1135,11 +1148,10 @@ pub async fn respond_buddy(
         }
     } else {
         // WELL response — bump last_attestation_at to push back the clock.
-        let _ =
-            sqlx::query("UPDATE vault SET last_attestation_at = now() WHERE principal_id = $1")
-                .bind(buddy.principal_id.as_uuid())
-                .execute(&state.pool)
-                .await;
+        let _ = sqlx::query("UPDATE vault SET last_attestation_at = now() WHERE principal_id = $1")
+            .bind(buddy.principal_id.as_uuid())
+            .execute(&state.pool)
+            .await;
     }
 
     Ok(Json(buddy_view(&buddy)))
@@ -1429,9 +1441,7 @@ pub async fn seal_letter_multipart(
                     .map_err(|e| ApiError::BadRequest(format!("scheduled_release_at: {e}")))?;
                 scheduled_release_at = Some(
                     chrono::DateTime::parse_from_rfc3339(&s)
-                        .map_err(|e| {
-                            ApiError::BadRequest(format!("scheduled_release_at: {e}"))
-                        })?
+                        .map_err(|e| ApiError::BadRequest(format!("scheduled_release_at: {e}")))?
                         .with_timezone(&Utc),
                 );
             }
@@ -1553,7 +1563,10 @@ pub async fn seal_letter_multipart(
         let attachment_sealed = crypto_stub::seal(state.kms.as_ref(), &transformed.bytes).await?;
         let storage_key = state
             .blob_store
-            .put(vault.storage_region.as_aws_str(), &attachment_sealed.ciphertext)
+            .put(
+                vault.storage_region.as_aws_str(),
+                &attachment_sealed.ciphertext,
+            )
             .await
             .map_err(|e| ApiError::Internal(anyhow::anyhow!("blob put: {e}")))?;
 
@@ -1658,7 +1671,10 @@ pub async fn claim_attachment(
     }
     let mut nbuf = [0u8; 12];
     nbuf.copy_from_slice(&nonce);
-    let sealed = Sealed { nonce: nbuf, ciphertext };
+    let sealed = Sealed {
+        nonce: nbuf,
+        ciphertext,
+    };
     let plaintext = crypto_stub::open(state.kms.as_ref(), &sealed).await?;
 
     let safe_filename = attachment
@@ -1780,8 +1796,7 @@ pub async fn request_account_deletion(
         Json(DeletionRequestedView {
             deletion_scheduled_for: scheduled.to_rfc3339(),
             cancel_until: scheduled.to_rfc3339(),
-            explanation:
-                "Your account will be deleted at the scheduled time unless you cancel. \
+            explanation: "Your account will be deleted at the scheduled time unless you cancel. \
                  This is different from cancelling your Subscription. \
                  See docs/USER_GUIDE.md.",
         }),
@@ -1822,7 +1837,10 @@ pub async fn claim_release(
     }
     let mut nbuf = [0u8; 12];
     nbuf.copy_from_slice(&nonce);
-    let sealed = Sealed { nonce: nbuf, ciphertext };
+    let sealed = Sealed {
+        nonce: nbuf,
+        ciphertext,
+    };
     let plaintext = crypto_stub::open(state.kms.as_ref(), &sealed).await?;
     let body = String::from_utf8(plaintext)
         .unwrap_or_else(|_| "(binary Letter — viewer not yet implemented)".into());
@@ -2381,8 +2399,7 @@ pub async fn co_steward_update_recipient(
     // changed: a held event Letter not yet fired, or a date-scheduled Letter
     // whose date is still ahead. Anything already delivered is immutable.
     let now = Utc::now();
-    let editable = (letter.release_mode == "EVENT_ON_DEMAND"
-        && letter.event_released_at.is_none())
+    let editable = (letter.release_mode == "EVENT_ON_DEMAND" && letter.event_released_at.is_none())
         || letter
             .scheduled_release_at
             .map(|d| d > now)

@@ -196,7 +196,10 @@ pub mod tx {
                 .iter()
                 .map(|(name, url)| format!("  - {name}\n    {url}"))
                 .collect();
-            format!("\n\nAttachments (each link works once):\n{}", lines.join("\n"))
+            format!(
+                "\n\nAttachments (each link works once):\n{}",
+                lines.join("\n")
+            )
         };
 
         sink.send(OutboundMessage {

@@ -131,7 +131,12 @@ async fn retention_sweep_finds_due_subscriptions() {
     db::cancel_subscription(&pool, p.id, -1).await.unwrap();
 
     let due = db::list_canceled_past_retention(&pool).await.unwrap();
-    assert!(due.contains(&p.id), "expected {:?} to be due, got {:?}", p.id, due);
+    assert!(
+        due.contains(&p.id),
+        "expected {:?} to be due, got {:?}",
+        p.id,
+        due
+    );
 
     db::expire_subscription(&pool, p.id).await.unwrap();
     let sub = db::fetch_subscription(&pool, p.id).await.unwrap();

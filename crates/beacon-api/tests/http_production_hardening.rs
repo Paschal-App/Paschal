@@ -26,14 +26,13 @@ async fn readyz_ok_when_db_up() {
 async fn metrics_endpoint_emits_prometheus_format() {
     let app = common::setup().await;
     let (_, _token) = common::signup_and_get_token(&app.router, "metrics@example.org").await;
-    let resp = tower::ServiceExt::oneshot(
-        app.router.clone(),
-        common::req_get("/metrics", None),
-    )
-    .await
-    .unwrap();
+    let resp = tower::ServiceExt::oneshot(app.router.clone(), common::req_get("/metrics", None))
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
     let text = std::str::from_utf8(&body).unwrap();
     assert!(text.contains("# HELP paschal_signups_total"));
     assert!(text.contains("paschal_signups_total 1"));
@@ -53,7 +52,12 @@ async fn security_headers_are_present() {
     assert!(h.get("permissions-policy").is_some());
     assert_eq!(h.get("referrer-policy").unwrap(), "no-referrer");
     assert!(h.get("strict-transport-security").is_some());
-    assert!(h.get("cache-control").unwrap().to_str().unwrap().contains("no-store"));
+    assert!(h
+        .get("cache-control")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .contains("no-store"));
 }
 
 #[tokio::test]
@@ -71,21 +75,13 @@ async fn account_deletion_full_lifecycle() {
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
 
     // Subsequent call to status should still work (account exists, just pending).
-    let (status, _) = common::send(
-        &app.router,
-        common::req_get("/v1/vaults", Some(&token)),
-    )
-    .await;
+    let (status, _) = common::send(&app.router, common::req_get("/v1/vaults", Some(&token))).await;
     assert_eq!(status, StatusCode::OK);
 
     // Cancel deletion.
     let (status, body) = common::send(
         &app.router,
-        common::req_post(
-            "/v1/principals/me/cancel-deletion",
-            json!({}),
-            Some(&token),
-        ),
+        common::req_post("/v1/principals/me/cancel-deletion", json!({}), Some(&token)),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "got: {body:?}");
@@ -98,11 +94,7 @@ async fn cancel_deletion_404_when_no_pending_request() {
     let (_, token) = common::signup_and_get_token(&app.router, "nodel@example.org").await;
     let (status, _) = common::send(
         &app.router,
-        common::req_post(
-            "/v1/principals/me/cancel-deletion",
-            json!({}),
-            Some(&token),
-        ),
+        common::req_post("/v1/principals/me/cancel-deletion", json!({}), Some(&token)),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -135,7 +127,10 @@ async fn microsoft_observe_records_signal() {
     assert_eq!(body["vaults_affected"], 1);
     // Fresh sign-in → contribution ~ 0.
     let c = body["contribution"].as_f64().unwrap();
-    assert!(c < 0.01, "fresh observation should have ~0 contribution, got {c}");
+    assert!(
+        c < 0.01,
+        "fresh observation should have ~0 contribution, got {c}"
+    );
 }
 
 #[tokio::test]
@@ -163,7 +158,9 @@ async fn openapi_yaml_served() {
             .await
             .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
     let text = std::str::from_utf8(&body).unwrap();
     assert!(text.contains("openapi: 3.1.0"));
     assert!(text.contains("Paschal Beacon API"));

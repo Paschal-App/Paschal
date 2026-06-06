@@ -211,14 +211,9 @@ async fn release_event_lifecycle() {
     let pool = common::setup().await;
     let (_p, v) = principal_with_vault(&pool).await;
 
-    let evt = db::create_release_event(
-        &pool,
-        v.id,
-        ReleaseReason::ManualPrincipalRelease,
-        false,
-    )
-    .await
-    .unwrap();
+    let evt = db::create_release_event(&pool, v.id, ReleaseReason::ManualPrincipalRelease, false)
+        .await
+        .unwrap();
     assert!(!evt.is_drill);
     assert!(evt.released_at.is_none());
 
@@ -256,7 +251,8 @@ async fn durable_release_is_due_and_claimed_exactly_once() {
     // The poll loop sees it as due.
     let due = db::list_due_releases(&pool, Utc::now()).await.unwrap();
     assert!(
-        due.iter().any(|(vid, rid, _)| *vid == v.id && *rid == evt.id),
+        due.iter()
+            .any(|(vid, rid, _)| *vid == v.id && *rid == evt.id),
         "elapsed release should be due"
     );
 
@@ -264,7 +260,10 @@ async fn durable_release_is_due_and_claimed_exactly_once() {
     let first = db::claim_vault_for_release(&pool, v.id).await.unwrap();
     let second = db::claim_vault_for_release(&pool, v.id).await.unwrap();
     assert!(first, "first claim must win");
-    assert!(!second, "second claim must lose — release fires exactly once");
+    assert!(
+        !second,
+        "second claim must lose — release fires exactly once"
+    );
 
     // After the claim the Vault is RELEASING and the release is no longer due.
     assert_eq!(
@@ -278,7 +277,10 @@ async fn durable_release_is_due_and_claimed_exactly_once() {
     );
 }
 
-async fn a_co_steward(pool: &sqlx::PgPool, pid: beacon_core::PrincipalId) -> beacon_core::CoStewardId {
+async fn a_co_steward(
+    pool: &sqlx::PgPool,
+    pid: beacon_core::PrincipalId,
+) -> beacon_core::CoStewardId {
     db::invite_co_steward(
         pool,
         db::CoStewardInviteInput {
@@ -319,13 +321,17 @@ async fn event_letter_is_held_from_signal_and_schedule() {
     .await
     .unwrap();
 
-    let sig = db::list_letters_for_signal_release(&pool, v.id).await.unwrap();
+    let sig = db::list_letters_for_signal_release(&pool, v.id)
+        .await
+        .unwrap();
     assert!(
         !sig.iter().any(|l| l.id == ev.id),
         "event letter must not fire on a signal release"
     );
     let far_future = Utc::now() + ChronoDuration::days(36500);
-    let due = db::list_scheduled_letters_due(&pool, far_future).await.unwrap();
+    let due = db::list_scheduled_letters_due(&pool, far_future)
+        .await
+        .unwrap();
     assert!(
         !due.iter().any(|(_, lid)| *lid == ev.id),
         "event letter must never be scheduled-due"
@@ -383,9 +389,15 @@ async fn recipient_change_applies_after_hold_and_cancels() {
     let applied = db::apply_recipient_change(&pool, change.id).await.unwrap();
     assert_eq!(applied, Some((letter.id, "new@example.org".to_string())));
     // Idempotent: re-applying does nothing.
-    assert!(db::apply_recipient_change(&pool, change.id).await.unwrap().is_none());
+    assert!(db::apply_recipient_change(&pool, change.id)
+        .await
+        .unwrap()
+        .is_none());
     assert_eq!(
-        db::fetch_letter_admin(&pool, letter.id).await.unwrap().recipient_email,
+        db::fetch_letter_admin(&pool, letter.id)
+            .await
+            .unwrap()
+            .recipient_email,
         "new@example.org"
     );
 
@@ -405,9 +417,15 @@ async fn recipient_change_applies_after_hold_and_cancels() {
         .await
         .unwrap()
         .contains(&evil.id));
-    assert!(db::apply_recipient_change(&pool, evil.id).await.unwrap().is_none());
+    assert!(db::apply_recipient_change(&pool, evil.id)
+        .await
+        .unwrap()
+        .is_none());
     assert_eq!(
-        db::fetch_letter_admin(&pool, letter.id).await.unwrap().recipient_email,
+        db::fetch_letter_admin(&pool, letter.id)
+            .await
+            .unwrap()
+            .recipient_email,
         "new@example.org",
         "cancelled change must not touch the delivery address"
     );

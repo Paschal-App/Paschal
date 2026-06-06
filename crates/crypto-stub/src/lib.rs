@@ -275,7 +275,8 @@ mod tests {
 
     #[test]
     fn passphrase_seal_open_roundtrip() {
-        let bundle = seal_with_passphrase(b"my wedding letter contents", "this is a long pass").unwrap();
+        let bundle =
+            seal_with_passphrase(b"my wedding letter contents", "this is a long pass").unwrap();
         let back = open_with_passphrase(&bundle, "this is a long pass").unwrap();
         assert_eq!(back, b"my wedding letter contents");
     }
@@ -499,4 +500,3 @@ mod tests {
         }
     }
 }
-

@@ -81,9 +81,9 @@ pub async fn send(router: &Router, req: Request<Body>) -> (StatusCode, serde_jso
     let body = if body_bytes.is_empty() {
         serde_json::Value::Null
     } else {
-        serde_json::from_slice(&body_bytes).unwrap_or_else(|_| {
-            serde_json::json!({ "raw": String::from_utf8_lossy(&body_bytes).to_string() })
-        })
+        serde_json::from_slice(&body_bytes).unwrap_or_else(
+            |_| serde_json::json!({ "raw": String::from_utf8_lossy(&body_bytes).to_string() }),
+        )
     };
     (status, body)
 }

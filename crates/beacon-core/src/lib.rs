@@ -133,7 +133,12 @@ impl VaultState {
             "RELEASING" => Self::Releasing,
             "RELEASED" => Self::Released,
             "ARCHIVED" => Self::Archived,
-            other => return Err(DomainError::UnknownEnumValue("VaultState".into(), other.into())),
+            other => {
+                return Err(DomainError::UnknownEnumValue(
+                    "VaultState".into(),
+                    other.into(),
+                ))
+            }
         })
     }
 }
@@ -413,7 +418,12 @@ impl SignalSource {
             "EMAIL_INACTIVITY" => Self::Email,
             "DEATH_REGISTRY" => Self::DeathRegistry,
             "SENTINEL_OFFLINE" => Self::SentinelOffline,
-            other => return Err(DomainError::UnknownEnumValue("SignalSource".into(), other.into())),
+            other => {
+                return Err(DomainError::UnknownEnumValue(
+                    "SignalSource".into(),
+                    other.into(),
+                ))
+            }
         })
     }
 
@@ -471,7 +481,12 @@ impl BuddyResponse {
             "WELL" => Self::Well,
             "WORRIED" => Self::Worried,
             "UNABLE_TO_REACH" => Self::UnableToReach,
-            other => return Err(DomainError::UnknownEnumValue("BuddyResponse".into(), other.into())),
+            other => {
+                return Err(DomainError::UnknownEnumValue(
+                    "BuddyResponse".into(),
+                    other.into(),
+                ))
+            }
         })
     }
 
@@ -575,7 +590,12 @@ impl StorageRegion {
             "ap-southeast-2" => Self::ApSoutheast2,
             "eu-central-1" => Self::EuCentral1,
             "us-east-1" => Self::UsEast1,
-            other => return Err(DomainError::UnknownEnumValue("StorageRegion".into(), other.into())),
+            other => {
+                return Err(DomainError::UnknownEnumValue(
+                    "StorageRegion".into(),
+                    other.into(),
+                ))
+            }
         })
     }
 
@@ -931,8 +951,14 @@ mod tests {
     #[test]
     fn buddy_response_contributions_in_order() {
         // Worried < UnableToReach < (no Well doesn't contribute)
-        assert!(BuddyResponse::Well.release_contribution() < BuddyResponse::Worried.release_contribution());
-        assert!(BuddyResponse::Worried.release_contribution() < BuddyResponse::UnableToReach.release_contribution());
+        assert!(
+            BuddyResponse::Well.release_contribution()
+                < BuddyResponse::Worried.release_contribution()
+        );
+        assert!(
+            BuddyResponse::Worried.release_contribution()
+                < BuddyResponse::UnableToReach.release_contribution()
+        );
     }
 
     // ---- Scoring ----
@@ -962,24 +988,60 @@ mod tests {
     fn three_classes_can_alert() {
         // Heartbeat + CDR + Apple iCloud + Buddy + Guardian, all saturated.
         let obs = vec![
-            ScoredObservation { source: SignalSource::Heartbeat, contribution: 1.0, weight: 0.30 },
-            ScoredObservation { source: SignalSource::Cdr, contribution: 1.0, weight: 0.25 },
-            ScoredObservation { source: SignalSource::AppleIcloudShortcut, contribution: 1.0, weight: 0.18 },
-            ScoredObservation { source: SignalSource::BuddyAttestation, contribution: 1.0, weight: 0.20 },
-            ScoredObservation { source: SignalSource::BuddyAttestation, contribution: 1.0, weight: 0.20 },
-            ScoredObservation { source: SignalSource::GuardianAttestation, contribution: 1.0, weight: 0.40 },
+            ScoredObservation {
+                source: SignalSource::Heartbeat,
+                contribution: 1.0,
+                weight: 0.30,
+            },
+            ScoredObservation {
+                source: SignalSource::Cdr,
+                contribution: 1.0,
+                weight: 0.25,
+            },
+            ScoredObservation {
+                source: SignalSource::AppleIcloudShortcut,
+                contribution: 1.0,
+                weight: 0.18,
+            },
+            ScoredObservation {
+                source: SignalSource::BuddyAttestation,
+                contribution: 1.0,
+                weight: 0.20,
+            },
+            ScoredObservation {
+                source: SignalSource::BuddyAttestation,
+                contribution: 1.0,
+                weight: 0.20,
+            },
+            ScoredObservation {
+                source: SignalSource::GuardianAttestation,
+                contribution: 1.0,
+                weight: 0.40,
+            },
         ];
         let s = score(&obs);
         // Expected raw ~= sqrt(0.09 + 0.0625 + 0.0324 + 0.04 + 0.04 + 0.16) ≈ 0.65? Let's just check >= threshold with guardian.
         assert!(s.should_alert(0.7, 3) || s.score > 0.6, "got {}", s.score);
-        assert!(s.independent_classes >= 3, "{} classes", s.independent_classes);
+        assert!(
+            s.independent_classes >= 3,
+            "{} classes",
+            s.independent_classes
+        );
     }
 
     #[test]
     fn observations_below_threshold_dont_count_toward_classes() {
         let obs = vec![
-            ScoredObservation { source: SignalSource::Heartbeat, contribution: 0.15, weight: 0.30 },
-            ScoredObservation { source: SignalSource::Cdr, contribution: 0.15, weight: 0.25 },
+            ScoredObservation {
+                source: SignalSource::Heartbeat,
+                contribution: 0.15,
+                weight: 0.30,
+            },
+            ScoredObservation {
+                source: SignalSource::Cdr,
+                contribution: 0.15,
+                weight: 0.25,
+            },
         ];
         let s = score(&obs);
         assert_eq!(s.independent_classes, 0);

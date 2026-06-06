@@ -102,7 +102,8 @@ impl AppState {
             .map_err(|_| anyhow::anyhow!("DATABASE_URL must be set (see .env.example)"))?;
         // Retry connect up to 30s — Postgres may be coming up alongside the
         // Beacon under docker-compose.
-        let pool = db::connect_with_retry(&database_url, std::time::Duration::from_secs(30)).await?;
+        let pool =
+            db::connect_with_retry(&database_url, std::time::Duration::from_secs(30)).await?;
 
         // Migration mode. Under blue/green the pipeline runs migrations as a
         // one-off pre-deploy task and the long-running tasks boot in `verify`
@@ -238,7 +239,9 @@ async fn build_s3_backend() -> anyhow::Result<Arc<dyn BlobStore>> {
         for region in &regions {
             let suffix = region.to_uppercase().replace('-', "_");
             let bucket = std::env::var(format!("BLOB_S3_BUCKET_{suffix}")).map_err(|_| {
-                anyhow::anyhow!("BLOB_S3_BUCKET_{suffix} must be set (region {region} in BLOB_S3_REGIONS)")
+                anyhow::anyhow!(
+                    "BLOB_S3_BUCKET_{suffix} must be set (region {region} in BLOB_S3_REGIONS)"
+                )
             })?;
             let kms_key_id = std::env::var(format!("BLOB_S3_KMS_KEY_ID_{suffix}")).ok();
             let store =
@@ -256,7 +259,11 @@ async fn build_s3_backend() -> anyhow::Result<Arc<dyn BlobStore>> {
         .map_err(|_| anyhow::anyhow!("BLOB_S3_BUCKET must be set when BLOB_BACKEND=s3"))?;
     let region = std::env::var("BLOB_S3_REGION")
         .or_else(|_| std::env::var("AWS_REGION"))
-        .unwrap_or_else(|_| beacon_core::StorageRegion::default().as_aws_str().to_string());
+        .unwrap_or_else(|_| {
+            beacon_core::StorageRegion::default()
+                .as_aws_str()
+                .to_string()
+        });
     let kms_key_id = std::env::var("BLOB_S3_KMS_KEY_ID").ok();
     tracing::info!(%bucket, %region, "using single-region S3 blob backend");
     Ok(Arc::new(
@@ -265,26 +272,49 @@ async fn build_s3_backend() -> anyhow::Result<Arc<dyn BlobStore>> {
 }
 
 fn env_i64(name: &str, default: i64) -> i64 {
-    std::env::var(name).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
+    std::env::var(name)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(default)
 }
 fn env_i32(name: &str, default: i32) -> i32 {
-    std::env::var(name).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
+    std::env::var(name)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(default)
 }
 fn env_u64(name: &str, default: u64) -> u64 {
-    std::env::var(name).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
+    std::env::var(name)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(default)
 }
 fn env_f32(name: &str, default: f32) -> f32 {
-    std::env::var(name).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
+    std::env::var(name)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(default)
 }
 fn env_usize(name: &str, default: usize) -> usize {
-    std::env::var(name).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
+    std::env::var(name)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(default)
 }
 fn env_u32(name: &str, default: u32) -> u32 {
-    std::env::var(name).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
+    std::env::var(name)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(default)
 }
 fn env_bool(name: &str, default: bool) -> bool {
     std::env::var(name)
         .ok()
-        .map(|s| matches!(s.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .map(|s| {
+            matches!(
+                s.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
         .unwrap_or(default)
 }

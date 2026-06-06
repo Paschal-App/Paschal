@@ -126,10 +126,7 @@ pub const EMBEDDED_MIGRATIONS: &[(&str, &str)] = &[
         "0012_co_steward_postmortem",
         include_str!("../../../migrations/0012_co_steward_postmortem.sql"),
     ),
-    (
-        "0013_tos",
-        include_str!("../../../migrations/0013_tos.sql"),
-    ),
+    ("0013_tos", include_str!("../../../migrations/0013_tos.sql")),
     (
         "0014_vault_contacts",
         include_str!("../../../migrations/0014_vault_contacts.sql"),
@@ -196,7 +193,9 @@ pub async fn verify_migrations(pool: &PgPool) -> Result<(), DbError> {
     .fetch_optional(pool)
     .await?;
     if !matches!(table_exists, Some((true,))) {
-        return Err(DbError::MigrationPending(EMBEDDED_MIGRATIONS[0].0.to_string()));
+        return Err(DbError::MigrationPending(
+            EMBEDDED_MIGRATIONS[0].0.to_string(),
+        ));
     }
 
     for (name, _) in EMBEDDED_MIGRATIONS {
@@ -249,10 +248,12 @@ async fn migrate_locked(pool: &PgPool) -> Result<usize, DbError> {
             .await?;
             if matches!(exists, Some((true,))) {
                 tracing::info!(migration = name, "found existing schema — marking applied");
-                sqlx::query("INSERT INTO schema_migrations (name) VALUES ($1) ON CONFLICT DO NOTHING")
-                    .bind(name)
-                    .execute(pool)
-                    .await?;
+                sqlx::query(
+                    "INSERT INTO schema_migrations (name) VALUES ($1) ON CONFLICT DO NOTHING",
+                )
+                .bind(name)
+                .execute(pool)
+                .await?;
                 continue;
             }
         }
@@ -267,10 +268,12 @@ async fn migrate_locked(pool: &PgPool) -> Result<usize, DbError> {
             .await?;
             if matches!(exists, Some((true,))) {
                 tracing::info!(migration = name, "found existing tables — marking applied");
-                sqlx::query("INSERT INTO schema_migrations (name) VALUES ($1) ON CONFLICT DO NOTHING")
-                    .bind(name)
-                    .execute(pool)
-                    .await?;
+                sqlx::query(
+                    "INSERT INTO schema_migrations (name) VALUES ($1) ON CONFLICT DO NOTHING",
+                )
+                .bind(name)
+                .execute(pool)
+                .await?;
                 continue;
             }
         }
@@ -285,10 +288,12 @@ async fn migrate_locked(pool: &PgPool) -> Result<usize, DbError> {
             .await?;
             if matches!(exists, Some((true,))) {
                 tracing::info!(migration = name, "found existing tables — marking applied");
-                sqlx::query("INSERT INTO schema_migrations (name) VALUES ($1) ON CONFLICT DO NOTHING")
-                    .bind(name)
-                    .execute(pool)
-                    .await?;
+                sqlx::query(
+                    "INSERT INTO schema_migrations (name) VALUES ($1) ON CONFLICT DO NOTHING",
+                )
+                .bind(name)
+                .execute(pool)
+                .await?;
                 continue;
             }
         }
@@ -862,10 +867,7 @@ pub struct LetterFull {
     pub nonce: Vec<u8>,
 }
 
-pub async fn fetch_letter_full(
-    pool: &PgPool,
-    letter_id: LetterId,
-) -> Result<LetterFull, DbError> {
+pub async fn fetch_letter_full(pool: &PgPool, letter_id: LetterId) -> Result<LetterFull, DbError> {
     let row = sqlx::query(
         "SELECT id, vault_id, title, recipient_email, sealed_at,
                 scheduled_release_at, kind, category, release_mode,
@@ -1301,12 +1303,11 @@ pub async fn create_release_event_with_deadline(
 /// this caller won the transition (exactly one worker can, even across replicas
 /// and the per-request timer). The release pipeline runs only for the winner.
 pub async fn claim_vault_for_release(pool: &PgPool, vault_id: VaultId) -> Result<bool, DbError> {
-    let res = sqlx::query(
-        "UPDATE vault SET state = 'RELEASING' WHERE id = $1 AND state = 'COOLING_OFF'",
-    )
-    .bind(vault_id.as_uuid())
-    .execute(pool)
-    .await?;
+    let res =
+        sqlx::query("UPDATE vault SET state = 'RELEASING' WHERE id = $1 AND state = 'COOLING_OFF'")
+            .bind(vault_id.as_uuid())
+            .execute(pool)
+            .await?;
     Ok(res.rows_affected() == 1)
 }
 
@@ -1532,7 +1533,10 @@ pub async fn list_canceled_past_retention(pool: &PgPool) -> Result<Vec<Principal
     )
     .fetch_all(pool)
     .await?;
-    Ok(rows.iter().map(|r| PrincipalId(r.get("principal_id"))).collect())
+    Ok(rows
+        .iter()
+        .map(|r| PrincipalId(r.get("principal_id")))
+        .collect())
 }
 
 pub async fn expire_subscription(pool: &PgPool, principal_id: PrincipalId) -> Result<(), DbError> {
@@ -1818,10 +1822,7 @@ pub async fn list_co_stewards(
     Ok(rows.iter().map(row_to_co_steward).collect())
 }
 
-pub async fn co_steward_count(
-    pool: &PgPool,
-    principal_id: PrincipalId,
-) -> Result<i64, DbError> {
+pub async fn co_steward_count(pool: &PgPool, principal_id: PrincipalId) -> Result<i64, DbError> {
     let row = sqlx::query(
         "SELECT COUNT(*)::BIGINT AS n FROM co_steward
           WHERE principal_id = $1 AND revoked_at IS NULL",
@@ -2098,30 +2099,23 @@ pub async fn storage_used(pool: &PgPool, principal_id: PrincipalId) -> Result<i6
 
 /// Vault count for the principal, for the max_vaults check.
 pub async fn vault_count(pool: &PgPool, principal_id: PrincipalId) -> Result<i64, DbError> {
-    let row = sqlx::query(
-        "SELECT COUNT(*)::BIGINT AS n FROM vault WHERE principal_id = $1",
-    )
-    .bind(principal_id.as_uuid())
-    .fetch_one(pool)
-    .await?;
+    let row = sqlx::query("SELECT COUNT(*)::BIGINT AS n FROM vault WHERE principal_id = $1")
+        .bind(principal_id.as_uuid())
+        .fetch_one(pool)
+        .await?;
     Ok(row.get::<i64, _>("n"))
 }
 
 /// Letter count under a Vault, for the max_letters_per_vault check.
 pub async fn letter_count(pool: &PgPool, vault_id: VaultId) -> Result<i64, DbError> {
-    let row = sqlx::query(
-        "SELECT COUNT(*)::BIGINT AS n FROM letter WHERE vault_id = $1",
-    )
-    .bind(vault_id.as_uuid())
-    .fetch_one(pool)
-    .await?;
+    let row = sqlx::query("SELECT COUNT(*)::BIGINT AS n FROM letter WHERE vault_id = $1")
+        .bind(vault_id.as_uuid())
+        .fetch_one(pool)
+        .await?;
     Ok(row.get::<i64, _>("n"))
 }
 
-pub async fn touch_apple_shortcut_sub(
-    pool: &PgPool,
-    installation_id: &str,
-) -> Result<(), DbError> {
+pub async fn touch_apple_shortcut_sub(pool: &PgPool, installation_id: &str) -> Result<(), DbError> {
     sqlx::query(
         "UPDATE apple_shortcut_subscription
             SET last_ping_at = now()
@@ -2197,8 +2191,8 @@ pub async fn create_vault_contact(
     birthday: Option<&str>,
     release_note: Option<&str>,
 ) -> Result<VaultContact, DbError> {
-    let bd: Option<chrono::NaiveDate> = birthday
-        .and_then(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok());
+    let bd: Option<chrono::NaiveDate> =
+        birthday.and_then(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok());
     let row = sqlx::query(
         "INSERT INTO vault_contact (vault_id, display_name, email, birthday, release_note)
          VALUES ($1, $2, $3, $4, $5)
@@ -2227,8 +2221,8 @@ pub async fn update_vault_contact(
     birthday: Option<&str>,
     release_note: Option<&str>,
 ) -> Result<VaultContact, DbError> {
-    let bd: Option<chrono::NaiveDate> = birthday
-        .and_then(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok());
+    let bd: Option<chrono::NaiveDate> =
+        birthday.and_then(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok());
     let row = sqlx::query(
         "UPDATE vault_contact
             SET display_name = $1, email = $2, birthday = $3, release_note = $4
@@ -2334,13 +2328,11 @@ pub async fn touch_bank_dormancy_sub(
     webhook_id: Uuid,
     now: DateTime<Utc>,
 ) -> Result<(), DbError> {
-    sqlx::query(
-        "UPDATE bank_dormancy_subscription SET last_webhook_at = $1 WHERE webhook_id = $2",
-    )
-    .bind(now)
-    .bind(webhook_id)
-    .execute(pool)
-    .await?;
+    sqlx::query("UPDATE bank_dormancy_subscription SET last_webhook_at = $1 WHERE webhook_id = $2")
+        .bind(now)
+        .bind(webhook_id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 

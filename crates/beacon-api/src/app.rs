@@ -41,10 +41,7 @@ pub fn build_router(state: AppState) -> Router {
             get(routes::list_vaults).post(routes::create_vault),
         )
         .route("/v1/vaults/:id", get(routes::get_vault))
-        .route(
-            "/v1/vaults/:id/region",
-            post(routes::move_vault_region),
-        )
+        .route("/v1/vaults/:id/region", post(routes::move_vault_region))
         .route(
             "/v1/vaults/:id/letters",
             get(routes::list_letters).post(routes::seal_letter),
@@ -62,8 +59,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/vaults/:id/drills", post(routes::run_drill))
         .route(
             "/v1/vaults/:id/signal-subscriptions",
-            get(routes::list_signal_subscriptions)
-                .post(routes::upsert_signal_subscription),
+            get(routes::list_signal_subscriptions).post(routes::upsert_signal_subscription),
         )
         // Heartbeat
         .route("/v1/heartbeats", post(routes::post_heartbeat))
@@ -92,7 +88,10 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/v1/co-stewards/confirm", post(routes::confirm_co_steward))
         .route("/v1/co-stewards/sign-in", post(routes::sign_in_co_steward))
-        .route("/v1/co-stewards/me/dashboard", get(routes::co_steward_dashboard))
+        .route(
+            "/v1/co-stewards/me/dashboard",
+            get(routes::co_steward_dashboard),
+        )
         .route(
             "/v1/co-stewards/me/letters",
             get(routes::co_steward_admin_letters),
@@ -121,7 +120,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/buddies/confirm", post(routes::confirm_buddy))
         .route("/v1/buddies/:id/responses", post(routes::respond_buddy))
         // Subscription (read-only in the self-hosted edition — no billing)
-        .route("/v1/principals/me/subscription", get(routes::get_subscription))
+        .route(
+            "/v1/principals/me/subscription",
+            get(routes::get_subscription),
+        )
         .route("/v1/principals/me/usage", get(routes::get_usage))
         // Account deletion
         .route(
@@ -145,8 +147,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route(
             "/v1/vaults/:id/contacts/:cid",
-            axum::routing::put(routes::update_vault_contact)
-                .delete(routes::delete_vault_contact),
+            axum::routing::put(routes::update_vault_contact).delete(routes::delete_vault_contact),
         )
         // Bank dormancy signal
         .route(
@@ -231,4 +232,3 @@ async fn metrics_endpoint(State(state): State<AppState>) -> impl axum::response:
         body,
     )
 }
-

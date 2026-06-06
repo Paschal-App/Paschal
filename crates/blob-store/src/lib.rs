@@ -90,7 +90,10 @@ impl LocalFilesystemStore {
     /// Map an opaque key to an on-disk path with two-level sharding. The
     /// first 2 hex chars of the key become `dir1`, the next 2 become `dir2`.
     fn path_for(&self, key: &str) -> PathBuf {
-        let safe = key.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect::<String>();
+        let safe = key
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+            .collect::<String>();
         let d1 = safe.get(0..2).unwrap_or("xx");
         let d2 = safe.get(2..4).unwrap_or("xx");
         self.root.join(d1).join(d2).join(format!("{safe}.blob"))
@@ -186,7 +189,10 @@ mod tests {
     async fn missing_key_returns_not_found() {
         let dir = TempDir::new().unwrap();
         let store = LocalFilesystemStore::new(dir.path());
-        let err = store.get("00000000-0000-0000-0000-000000000000").await.unwrap_err();
+        let err = store
+            .get("00000000-0000-0000-0000-000000000000")
+            .await
+            .unwrap_err();
         assert!(matches!(err, BlobError::NotFound(_)));
     }
 

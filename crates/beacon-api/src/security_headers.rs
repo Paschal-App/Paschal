@@ -86,11 +86,7 @@ pub async fn middleware(req: Request<axum::body::Body>, next: Next) -> Response 
     resp
 }
 
-fn insert(
-    headers: &mut axum::http::HeaderMap,
-    name: &'static str,
-    value: &str,
-) {
+fn insert(headers: &mut axum::http::HeaderMap, name: &'static str, value: &str) {
     let header_name = header::HeaderName::from_static(name);
     if let Ok(v) = HeaderValue::from_str(value) {
         // Don't overwrite if a handler already set a more specific value.
@@ -119,10 +115,19 @@ mod tests {
             .unwrap();
         let resp = tower::ServiceExt::oneshot(app, req).await.unwrap();
 
-        assert_eq!(resp.headers().get("x-content-type-options").unwrap(), "nosniff");
+        assert_eq!(
+            resp.headers().get("x-content-type-options").unwrap(),
+            "nosniff"
+        );
         assert_eq!(resp.headers().get("x-frame-options").unwrap(), "DENY");
         assert!(resp.headers().get("content-security-policy").is_some());
-        assert!(resp.headers().get("cache-control").unwrap().to_str().unwrap().contains("no-store"));
+        assert!(resp
+            .headers()
+            .get("cache-control")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("no-store"));
     }
 
     #[tokio::test]
@@ -137,7 +142,12 @@ mod tests {
             .unwrap();
         let resp = tower::ServiceExt::oneshot(app, req).await.unwrap();
 
-        let csp = resp.headers().get("content-security-policy").unwrap().to_str().unwrap();
+        let csp = resp
+            .headers()
+            .get("content-security-policy")
+            .unwrap()
+            .to_str()
+            .unwrap();
         assert!(csp.contains("script-src 'self' 'unsafe-inline'"));
     }
 
@@ -187,9 +197,19 @@ mod tests {
             .body(axum::body::Body::empty())
             .unwrap();
         let resp = tower::ServiceExt::oneshot(app, req).await.unwrap();
-        let csp = resp.headers().get("content-security-policy").unwrap().to_str().unwrap();
+        let csp = resp
+            .headers()
+            .get("content-security-policy")
+            .unwrap()
+            .to_str()
+            .unwrap();
         assert!(csp.contains("default-src 'none'"));
-        let cc = resp.headers().get("cache-control").unwrap().to_str().unwrap();
+        let cc = resp
+            .headers()
+            .get("cache-control")
+            .unwrap()
+            .to_str()
+            .unwrap();
         assert!(cc.contains("no-store"));
     }
 }

@@ -74,7 +74,10 @@ async fn end_to_end_release() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(vault["state"], "RELEASED", "expected RELEASED, got {vault:?}");
+    assert_eq!(
+        vault["state"], "RELEASED",
+        "expected RELEASED, got {vault:?}"
+    );
 
     // 8. Pull the release claim token directly from the DB to simulate the
     //    recipient receiving the email link.
@@ -83,10 +86,7 @@ async fn end_to_end_release() {
     // 9. Recipient claims the Letter.
     let (status, claim) = common::send(
         &app.router,
-        common::req_get(
-            &format!("/v1/releases/claim?token={claim_token}"),
-            None,
-        ),
+        common::req_get(&format!("/v1/releases/claim?token={claim_token}"), None),
     )
     .await;
     assert_eq!(status, StatusCode::OK);

@@ -80,9 +80,11 @@ fn file_response(path: &str, bytes: &[u8]) -> Response {
             HeaderValue::from_static("public, max-age=31536000, immutable"),
         );
     }
-    builder.body(Body::from(bytes.to_vec())).unwrap_or_else(|_| {
-        (StatusCode::INTERNAL_SERVER_ERROR, "spa response error").into_response()
-    })
+    builder
+        .body(Body::from(bytes.to_vec()))
+        .unwrap_or_else(|_| {
+            (StatusCode::INTERNAL_SERVER_ERROR, "spa response error").into_response()
+        })
 }
 
 fn guess_mime(path: &str) -> &'static str {

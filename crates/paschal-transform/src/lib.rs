@@ -102,7 +102,11 @@ impl Transformed {
 pub trait Transformer: Send + Sync {
     fn name(&self) -> &'static str;
     fn handles(&self, mime: &str) -> bool;
-    async fn transform(&self, input: &[u8], original_mime: &str) -> Result<Transformed, TransformError>;
+    async fn transform(
+        &self,
+        input: &[u8],
+        original_mime: &str,
+    ) -> Result<Transformed, TransformError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -165,7 +169,11 @@ impl Transformer for TextPassThrough {
     fn handles(&self, mime: &str) -> bool {
         mime.starts_with("text/") || mime == "application/json" || mime == "application/xml"
     }
-    async fn transform(&self, input: &[u8], original_mime: &str) -> Result<Transformed, TransformError> {
+    async fn transform(
+        &self,
+        input: &[u8],
+        original_mime: &str,
+    ) -> Result<Transformed, TransformError> {
         // Strip BOM and normalize line endings to LF.
         let s = std::str::from_utf8(input).map_err(|_| TransformError::InvalidUtf8)?;
         let stripped = s.strip_prefix('\u{FEFF}').unwrap_or(s);
@@ -191,9 +199,16 @@ impl Transformer for ImageNormalizer {
         "image-normalizer"
     }
     fn handles(&self, mime: &str) -> bool {
-        matches!(mime, "image/jpeg" | "image/png" | "image/gif" | "image/webp")
+        matches!(
+            mime,
+            "image/jpeg" | "image/png" | "image/gif" | "image/webp"
+        )
     }
-    async fn transform(&self, input: &[u8], _original_mime: &str) -> Result<Transformed, TransformError> {
+    async fn transform(
+        &self,
+        input: &[u8],
+        _original_mime: &str,
+    ) -> Result<Transformed, TransformError> {
         // Decode the input into pixels (which discards EXIF). Re-encode as JPEG.
         let reader = ImageReader::new(Cursor::new(input))
             .with_guessed_format()
@@ -204,8 +219,7 @@ impl Transformer for ImageNormalizer {
 
         let mut buf = Vec::new();
         // Quality 90 is a good archival balance for photographs.
-        let encoder =
-            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 90);
+        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 90);
         img.write_with_encoder(encoder)
             .map_err(|e| TransformError::ImageEncode(e.to_string()))?;
 
@@ -231,7 +245,11 @@ impl Transformer for PdfPassThrough {
     fn handles(&self, mime: &str) -> bool {
         mime == "application/pdf"
     }
-    async fn transform(&self, input: &[u8], _original_mime: &str) -> Result<Transformed, TransformError> {
+    async fn transform(
+        &self,
+        input: &[u8],
+        _original_mime: &str,
+    ) -> Result<Transformed, TransformError> {
         if !input.starts_with(b"%PDF-") {
             return Err(TransformError::BadPdfHeader);
         }
@@ -264,7 +282,11 @@ impl Transformer for VideoPassThrough {
     fn handles(&self, mime: &str) -> bool {
         mime.starts_with("video/")
     }
-    async fn transform(&self, input: &[u8], original_mime: &str) -> Result<Transformed, TransformError> {
+    async fn transform(
+        &self,
+        input: &[u8],
+        original_mime: &str,
+    ) -> Result<Transformed, TransformError> {
         let mut notes = vec![format!(
             "Bytes preserved as-is ({original_mime}). The principal is responsible \
              for choosing a long-term-readable format; we recommend WebM (VP9 + Opus) \
@@ -295,10 +317,7 @@ impl Transformer for VideoPassThrough {
             );
         }
 
-        notes.push(
-            "v1 plan: transcode to WebM (VP9 + Opus) for archival stability."
-                .into(),
-        );
+        notes.push("v1 plan: transcode to WebM (VP9 + Opus) for archival stability.".into());
 
         Ok(Transformed::new(input.to_vec(), original_mime, notes))
     }
@@ -314,7 +333,11 @@ impl Transformer for AudioPassThrough {
     fn handles(&self, mime: &str) -> bool {
         mime.starts_with("audio/")
     }
-    async fn transform(&self, input: &[u8], original_mime: &str) -> Result<Transformed, TransformError> {
+    async fn transform(
+        &self,
+        input: &[u8],
+        original_mime: &str,
+    ) -> Result<Transformed, TransformError> {
         let mut notes = Vec::new();
         let mut output_bytes = input.to_vec();
 
@@ -375,13 +398,15 @@ impl Transformer for BinaryPassThrough {
     fn handles(&self, _mime: &str) -> bool {
         true
     }
-    async fn transform(&self, input: &[u8], original_mime: &str) -> Result<Transformed, TransformError> {
-        let notes = vec![
-            format!(
-                "No dedicated transformer for '{original_mime}'. Bytes preserved as-is. \
+    async fn transform(
+        &self,
+        input: &[u8],
+        original_mime: &str,
+    ) -> Result<Transformed, TransformError> {
+        let notes = vec![format!(
+            "No dedicated transformer for '{original_mime}'. Bytes preserved as-is. \
                  Consider attaching a flattened version (PDF, JPEG, plain text) for archival."
-            ),
-        ];
+        )];
         Ok(Transformed::new(input.to_vec(), original_mime, notes))
     }
 }
@@ -428,9 +453,8 @@ mod tests {
     #[tokio::test]
     async fn image_normalizer_round_trips_a_png() {
         // Tiny 2x2 PNG built in-memory.
-        let img = image::ImageBuffer::from_fn(2u32, 2u32, |x, _y| {
-            image::Rgb([(x * 100) as u8, 200, 50])
-        });
+        let img =
+            image::ImageBuffer::from_fn(2u32, 2u32, |x, _y| image::Rgb([(x * 100) as u8, 200, 50]));
         let mut input = Vec::new();
         image::DynamicImage::ImageRgb8(img)
             .write_to(&mut Cursor::new(&mut input), image::ImageFormat::Png)
@@ -455,8 +479,7 @@ mod tests {
     async fn image_normalizer_strips_exif() {
         // A minimal JPEG with a fake EXIF marker; the normalizer should
         // produce a smaller output without the marker.
-        let img =
-            image::ImageBuffer::from_fn(10u32, 10u32, |_x, _y| image::Rgb([100u8, 100, 100]));
+        let img = image::ImageBuffer::from_fn(10u32, 10u32, |_x, _y| image::Rgb([100u8, 100, 100]));
         let mut input = Vec::new();
         let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut input, 70);
         image::DynamicImage::ImageRgb8(img)
@@ -498,7 +521,10 @@ mod tests {
     #[tokio::test]
     async fn binary_passes_through_unknown_mime() {
         let t = BinaryPassThrough;
-        let out = t.transform(&[1, 2, 3], "application/x-mystery").await.unwrap();
+        let out = t
+            .transform(&[1, 2, 3], "application/x-mystery")
+            .await
+            .unwrap();
         assert_eq!(out.bytes, vec![1, 2, 3]);
         assert!(out.notes.iter().any(|n| n.contains("Consider attaching")));
     }
@@ -526,7 +552,9 @@ mod tests {
     async fn pipeline_rejects_oversize() {
         let pipeline = default_pipeline();
         let huge = vec![b'A'; 1024 + 1];
-        let err = apply(&pipeline, &huge, "text/plain", 1024).await.unwrap_err();
+        let err = apply(&pipeline, &huge, "text/plain", 1024)
+            .await
+            .unwrap_err();
         assert!(matches!(err, TransformError::TooLarge(_, _)));
     }
 
@@ -543,8 +571,12 @@ mod tests {
     #[tokio::test]
     async fn sha256_is_deterministic() {
         let pipeline = default_pipeline();
-        let a = apply(&pipeline, b"same content", "text/plain", 1024).await.unwrap();
-        let b = apply(&pipeline, b"same content", "text/plain", 1024).await.unwrap();
+        let a = apply(&pipeline, b"same content", "text/plain", 1024)
+            .await
+            .unwrap();
+        let b = apply(&pipeline, b"same content", "text/plain", 1024)
+            .await
+            .unwrap();
         assert_eq!(a.sha256_hex, b.sha256_hex);
         assert_eq!(a.sha256_hex.len(), 64); // 32 bytes hex-encoded
     }

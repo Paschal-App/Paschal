@@ -60,23 +60,15 @@ impl Metrics {
             signups_total: self.signups_total.load(Ordering::Relaxed),
             vaults_created_total: self.vaults_created_total.load(Ordering::Relaxed),
             letters_sealed_total: self.letters_sealed_total.load(Ordering::Relaxed),
-            attachments_sealed_total: self
-                .attachments_sealed_total
-                .load(Ordering::Relaxed),
-            attachments_bytes_total: self
-                .attachments_bytes_total
-                .load(Ordering::Relaxed),
+            attachments_sealed_total: self.attachments_sealed_total.load(Ordering::Relaxed),
+            attachments_bytes_total: self.attachments_bytes_total.load(Ordering::Relaxed),
             heartbeats_total: self.heartbeats_total.load(Ordering::Relaxed),
             releases_started_total: self.releases_started_total.load(Ordering::Relaxed),
-            releases_completed_total: self
-                .releases_completed_total
-                .load(Ordering::Relaxed),
+            releases_completed_total: self.releases_completed_total.load(Ordering::Relaxed),
             drills_completed_total: self.drills_completed_total.load(Ordering::Relaxed),
             buddy_responses_total: self.buddy_responses_total.load(Ordering::Relaxed),
             apple_pings_total: self.apple_pings_total.load(Ordering::Relaxed),
-            subscription_canceled_total: self
-                .subscription_canceled_total
-                .load(Ordering::Relaxed),
+            subscription_canceled_total: self.subscription_canceled_total.load(Ordering::Relaxed),
             subscription_reactivated_total: self
                 .subscription_reactivated_total
                 .load(Ordering::Relaxed),
@@ -89,7 +81,11 @@ impl Metrics {
         let s = self.snapshot();
         let mut out = String::new();
         let lines: &[(&str, &str, u64)] = &[
-            ("paschal_signups_total", "Total principal sign-ups.", s.signups_total),
+            (
+                "paschal_signups_total",
+                "Total principal sign-ups.",
+                s.signups_total,
+            ),
             (
                 "paschal_vaults_created_total",
                 "Total Vaults created.",

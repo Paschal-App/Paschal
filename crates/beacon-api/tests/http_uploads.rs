@@ -15,9 +15,7 @@ fn multipart_body(parts: Vec<(&str, &str, Option<&str>, Vec<u8>)>) -> (String, V
         let cd = if filename.is_empty() {
             format!("Content-Disposition: form-data; name=\"{name}\"\r\n")
         } else {
-            format!(
-                "Content-Disposition: form-data; name=\"{name}\"; filename=\"{filename}\"\r\n"
-            )
+            format!("Content-Disposition: form-data; name=\"{name}\"; filename=\"{filename}\"\r\n")
         };
         body.extend_from_slice(cd.as_bytes());
         if let Some(ct) = content_type {
@@ -306,7 +304,9 @@ async fn end_to_end_release_with_attachment() {
         .unwrap_or("")
         .to_string();
     assert!(cd.contains(&filename), "got disposition: {cd}");
-    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
     // The plaintext should be the LF-normalised version: "step 1\nstep 2\n".
     assert_eq!(&body[..], b"step 1\nstep 2\n");
 

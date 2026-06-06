@@ -216,7 +216,8 @@ async fn aggregator_tick(state: &AppState) -> anyhow::Result<()> {
         // Bank dormancy (CDR_BANK_DORMANCY) — webhook-based proof-of-life.
         // A fresh ping within the last 5× heartbeat window keeps the score low.
         if let Some(w) = weight_for(SignalSource::Cdr) {
-            let since = now - chrono::Duration::seconds((state.config.heartbeat_max_gap_seconds * 5) as i64);
+            let since = now
+                - chrono::Duration::seconds((state.config.heartbeat_max_gap_seconds * 5) as i64);
             let pings = db::list_bank_dormancy_subs_with_recent_ping(
                 &state.pool,
                 vault.principal_id,
@@ -226,10 +227,12 @@ async fn aggregator_tick(state: &AppState) -> anyhow::Result<()> {
             .unwrap_or_default();
             if pings.is_empty() {
                 // No recent ping — same staleness logic as heartbeat.
-                let last_bank_signals =
-                    db::list_recent_signals(&state.pool, vault.id, since).await.unwrap_or_default();
-                let has_recent =
-                    last_bank_signals.iter().any(|s| s.source == SignalSource::Cdr);
+                let last_bank_signals = db::list_recent_signals(&state.pool, vault.id, since)
+                    .await
+                    .unwrap_or_default();
+                let has_recent = last_bank_signals
+                    .iter()
+                    .any(|s| s.source == SignalSource::Cdr);
                 if !has_recent {
                     let max_gap = state.config.heartbeat_max_gap_seconds;
                     let last = vault.last_attestation_at;
@@ -409,7 +412,11 @@ pub async fn begin_release_with_cool(
 
     let _ = db::append_transparency_entry(
         &state.pool,
-        if is_drill { "DRILL_STARTED" } else { "COOLING_OFF_STARTED" },
+        if is_drill {
+            "DRILL_STARTED"
+        } else {
+            "COOLING_OFF_STARTED"
+        },
         &hash_bytes(release.id.as_uuid().as_bytes()),
         json!({
             "vault_id": vault_id,
@@ -608,13 +615,8 @@ pub async fn trigger_event_release(
     }
 
     let letter = db::fetch_letter_meta(&state.pool, letter_id).await?;
-    let release = db::create_release_event(
-        &state.pool,
-        vault_id,
-        ReleaseReason::Scheduled,
-        false,
-    )
-    .await?;
+    let release =
+        db::create_release_event(&state.pool, vault_id, ReleaseReason::Scheduled, false).await?;
 
     deliver_letter(state, release.id, &letter, false).await?;
 
@@ -656,7 +658,11 @@ async fn perform_release(
 
     let _ = db::append_transparency_entry(
         &state.pool,
-        if is_drill { "DRILL_COMPLETED" } else { "RELEASED" },
+        if is_drill {
+            "DRILL_COMPLETED"
+        } else {
+            "RELEASED"
+        },
         &hash_bytes(release_event_id.as_uuid().as_bytes()),
         json!({ "vault_id": vault_id, "release_event_id": release_event_id, "is_drill": is_drill }),
         None,
@@ -769,7 +775,10 @@ async fn retention_tick(state: &AppState) -> ApiResult<()> {
     Ok(())
 }
 
-async fn purge_principal_ciphertext(state: &AppState, pid: beacon_core::PrincipalId) -> ApiResult<()> {
+async fn purge_principal_ciphertext(
+    state: &AppState,
+    pid: beacon_core::PrincipalId,
+) -> ApiResult<()> {
     for vault in db::list_vaults(&state.pool, pid).await? {
         for letter in db::list_letters(&state.pool, vault.id).await? {
             // Purge attachment blobs first.
@@ -825,13 +834,7 @@ async fn scheduled_release_tick(state: &AppState) -> anyhow::Result<()> {
         // semantics for the most common case (the principal authored a
         // single deathbed Letter). Multi-Letter scheduling lands at v1 with
         // per-Letter release events.
-        let _ = begin_release(
-            state.clone(),
-            vault.id,
-            ReleaseReason::Scheduled,
-            false,
-        )
-        .await;
+        let _ = begin_release(state.clone(), vault.id, ReleaseReason::Scheduled, false).await;
         // Clear the scheduled_release_at so we don't re-fire on next tick.
         let _ = sqlx::query("UPDATE letter SET scheduled_release_at = NULL WHERE id = $1")
             .bind(letter_id.as_uuid())

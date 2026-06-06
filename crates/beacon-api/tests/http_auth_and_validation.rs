@@ -33,11 +33,7 @@ async fn signup_rejects_invalid_email() {
     let app = common::setup().await;
     let (status, body) = common::send(
         &app.router,
-        common::req_post(
-            "/v1/auth/signup",
-            json!({"email": "no-at-sign"}),
-            None,
-        ),
+        common::req_post("/v1/auth/signup", json!({"email": "no-at-sign"}), None),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);

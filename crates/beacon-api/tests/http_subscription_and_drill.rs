@@ -57,11 +57,7 @@ async fn drill_completes_and_returns_vault_to_active() {
     // Trigger drill.
     let (status, _) = common::send(
         &app.router,
-        common::req_post(
-            &format!("/v1/vaults/{vid}/drills"),
-            json!({}),
-            Some(&token),
-        ),
+        common::req_post(&format!("/v1/vaults/{vid}/drills"), json!({}), Some(&token)),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -112,7 +108,10 @@ async fn buddy_lifecycle_via_http() {
     .await;
     assert_eq!(status, StatusCode::OK);
     let buddy_id = body["buddy"]["id"].as_str().unwrap().to_string();
-    let confirmation = body["confirmation_token_DEV_ONLY"].as_str().unwrap().to_string();
+    let confirmation = body["confirmation_token_DEV_ONLY"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // List buddies
     let (status, list) = common::send(
@@ -126,11 +125,7 @@ async fn buddy_lifecycle_via_http() {
     // Confirm
     let (status, buddy) = common::send(
         &app.router,
-        common::req_post(
-            "/v1/buddies/confirm",
-            json!({"token": confirmation}),
-            None,
-        ),
+        common::req_post("/v1/buddies/confirm", json!({"token": confirmation}), None),
     )
     .await;
     assert_eq!(status, StatusCode::OK);

@@ -303,7 +303,12 @@ async fn ok_json(resp: reqwest::Response) -> Result<serde_json::Value> {
 // Command handlers
 // ---------------------------------------------------------------------------
 
-async fn cmd_signup(beacon: &str, email: &str, display_name: Option<String>, plan: &str) -> Result<()> {
+async fn cmd_signup(
+    beacon: &str,
+    email: &str,
+    display_name: Option<String>,
+    plan: &str,
+) -> Result<()> {
     let client = http();
     let url = format!("{}/v1/auth/signup", beacon.trim_end_matches('/'));
     let body = json!({ "email": email, "display_name": display_name, "plan": plan });
@@ -325,7 +330,9 @@ async fn cmd_signup(beacon: &str, email: &str, display_name: Option<String>, pla
 
     println!("signed up");
     println!("  email             : {email}");
-    if let Some(pid) = state.principal_id { println!("  principal_id      : {pid}"); }
+    if let Some(pid) = state.principal_id {
+        println!("  principal_id      : {pid}");
+    }
     println!("  subscription_state: {}", v["subscription_state"]);
     println!("  trial_end_at      : {}", v["trial_end_at"]);
     Ok(())
@@ -335,7 +342,9 @@ async fn cmd_vault_create(beacon: &str, name: &str, cooling: Option<i32>) -> Res
     let state = load_state()?;
     let url = format!("{}/v1/vaults", beacon.trim_end_matches('/'));
     let mut body = json!({ "name": name, "tier": "HONEST_OPERATOR" });
-    if let Some(c) = cooling { body["cooling_off_seconds"] = json!(c); }
+    if let Some(c) = cooling {
+        body["cooling_off_seconds"] = json!(c);
+    }
     let resp = authed_request(&http(), &state, reqwest::Method::POST, url, Some(body)).await?;
     let v = ok_json(resp).await.context("create vault failed")?;
     println!("vault created");
@@ -387,10 +396,18 @@ async fn cmd_letter_seal(
 ) -> Result<()> {
     let body = read_body(body_inline, body_file)?;
     let state = load_state()?;
-    let url = format!("{}/v1/vaults/{}/letters", beacon.trim_end_matches('/'), vault);
+    let url = format!(
+        "{}/v1/vaults/{}/letters",
+        beacon.trim_end_matches('/'),
+        vault
+    );
     let mut payload = json!({ "title": title, "recipient_email": recipient, "body": body });
-    if let Some(d) = drill_body { payload["drill_body"] = json!(d); }
-    if let Some(s) = scheduled_release_at { payload["scheduled_release_at"] = json!(s); }
+    if let Some(d) = drill_body {
+        payload["drill_body"] = json!(d);
+    }
+    if let Some(s) = scheduled_release_at {
+        payload["scheduled_release_at"] = json!(s);
+    }
     let resp = authed_request(&http(), &state, reqwest::Method::POST, url, Some(payload)).await?;
     let v = ok_json(resp).await.context("seal letter failed")?;
     println!("letter sealed");
@@ -422,18 +439,35 @@ async fn cmd_letter_upload(
         .text("title", title.to_string())
         .text("recipient_email", recipient.to_string());
 
-    if let Some(b) = body { form = form.text("body", b); }
+    if let Some(b) = body {
+        form = form.text("body", b);
+    }
 
     for path in &files {
-        let filename = path.file_name().and_then(|s| s.to_str()).unwrap_or("file").to_string();
+        let filename = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("file")
+            .to_string();
         let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
         let mime = mime_guess_for(&filename);
-        let part = multipart::Part::bytes(bytes).file_name(filename).mime_str(&mime)?;
+        let part = multipart::Part::bytes(bytes)
+            .file_name(filename)
+            .mime_str(&mime)?;
         form = form.part("file", part);
     }
 
-    let url = format!("{}/v1/vaults/{}/letters/multipart", beacon.trim_end_matches('/'), vault);
-    let resp = http().post(&url).bearer_auth(token).multipart(form).send().await?;
+    let url = format!(
+        "{}/v1/vaults/{}/letters/multipart",
+        beacon.trim_end_matches('/'),
+        vault
+    );
+    let resp = http()
+        .post(&url)
+        .bearer_auth(token)
+        .multipart(form)
+        .send()
+        .await?;
     let v = ok_json(resp).await.context("upload failed")?;
     println!("letter sealed with attachments");
     println!("  id          : {}", v["id"]);
@@ -491,7 +525,11 @@ fn read_body(inline: Option<String>, file: Option<PathBuf>) -> Result<String> {
 
 async fn cmd_letter_list(beacon: &str, vault: &str) -> Result<()> {
     let state = load_state()?;
-    let url = format!("{}/v1/vaults/{}/letters", beacon.trim_end_matches('/'), vault);
+    let url = format!(
+        "{}/v1/vaults/{}/letters",
+        beacon.trim_end_matches('/'),
+        vault
+    );
     let resp = authed_request(&http(), &state, reqwest::Method::GET, url, None).await?;
     let v = ok_json(resp).await?;
     for l in v.as_array().cloned().unwrap_or_default() {
@@ -508,8 +546,14 @@ async fn cmd_letter_list(beacon: &str, vault: &str) -> Result<()> {
 async fn cmd_heartbeat(beacon: &str) -> Result<()> {
     let state = load_state()?;
     let url = format!("{}/v1/heartbeats", beacon.trim_end_matches('/'));
-    let resp =
-        authed_request(&http(), &state, reqwest::Method::POST, url, Some(json!({ "via": "CLI" }))).await?;
+    let resp = authed_request(
+        &http(),
+        &state,
+        reqwest::Method::POST,
+        url,
+        Some(json!({ "via": "CLI" })),
+    )
+    .await?;
     let v = ok_json(resp).await?;
     println!("heartbeat received_at = {}", v["received_at"]);
     Ok(())
@@ -517,7 +561,11 @@ async fn cmd_heartbeat(beacon: &str) -> Result<()> {
 
 async fn cmd_force_release(beacon: &str, vault: &str) -> Result<()> {
     let state = load_state()?;
-    let url = format!("{}/v1/vaults/{}/force-release", beacon.trim_end_matches('/'), vault);
+    let url = format!(
+        "{}/v1/vaults/{}/force-release",
+        beacon.trim_end_matches('/'),
+        vault
+    );
     let resp = authed_request(&http(), &state, reqwest::Method::POST, url, None).await?;
     let v = ok_json(resp).await.context("force-release failed")?;
     println!("cooling-off started");
@@ -529,7 +577,11 @@ async fn cmd_force_release(beacon: &str, vault: &str) -> Result<()> {
 
 async fn cmd_cancel(beacon: &str, vault: &str) -> Result<()> {
     let state = load_state()?;
-    let url = format!("{}/v1/vaults/{}/cancel", beacon.trim_end_matches('/'), vault);
+    let url = format!(
+        "{}/v1/vaults/{}/cancel",
+        beacon.trim_end_matches('/'),
+        vault
+    );
     let resp = authed_request(&http(), &state, reqwest::Method::POST, url, None).await?;
     let v = ok_json(resp).await.context("cancel failed")?;
     println!("cancelled — vault state is now {}", v["state"]);
@@ -538,7 +590,11 @@ async fn cmd_cancel(beacon: &str, vault: &str) -> Result<()> {
 
 async fn cmd_drill(beacon: &str, vault: &str) -> Result<()> {
     let state = load_state()?;
-    let url = format!("{}/v1/vaults/{}/drills", beacon.trim_end_matches('/'), vault);
+    let url = format!(
+        "{}/v1/vaults/{}/drills",
+        beacon.trim_end_matches('/'),
+        vault
+    );
     let resp = authed_request(&http(), &state, reqwest::Method::POST, url, None).await?;
     let v = ok_json(resp).await.context("drill failed")?;
     println!("drill started");
@@ -585,7 +641,11 @@ async fn cmd_buddy_list(beacon: &str) -> Result<()> {
             "{}\t{}\t{}\t{}",
             b["id"].as_str().unwrap_or(""),
             b["email"].as_str().unwrap_or(""),
-            if b["confirmed"].as_bool().unwrap_or(false) { "confirmed" } else { "pending" },
+            if b["confirmed"].as_bool().unwrap_or(false) {
+                "confirmed"
+            } else {
+                "pending"
+            },
             b["last_response"].as_str().unwrap_or("(no response)"),
         );
     }
@@ -594,15 +654,27 @@ async fn cmd_buddy_list(beacon: &str) -> Result<()> {
 
 async fn cmd_buddy_confirm(beacon: &str, token: &str) -> Result<()> {
     let url = format!("{}/v1/buddies/confirm", beacon.trim_end_matches('/'));
-    let resp = http().post(&url).json(&json!({ "token": token })).send().await?;
+    let resp = http()
+        .post(&url)
+        .json(&json!({ "token": token }))
+        .send()
+        .await?;
     let v = ok_json(resp).await.context("confirm failed")?;
     println!("confirmed: {}", v["email"]);
     Ok(())
 }
 
 async fn cmd_buddy_respond(beacon: &str, buddy: &str, response: &str) -> Result<()> {
-    let url = format!("{}/v1/buddies/{}/responses", beacon.trim_end_matches('/'), buddy);
-    let resp = http().post(&url).json(&json!({ "response": response })).send().await?;
+    let url = format!(
+        "{}/v1/buddies/{}/responses",
+        beacon.trim_end_matches('/'),
+        buddy
+    );
+    let resp = http()
+        .post(&url)
+        .json(&json!({ "response": response }))
+        .send()
+        .await?;
     let v = ok_json(resp).await.context("respond failed")?;
     println!("response recorded: {}", v["last_response"]);
     Ok(())
@@ -619,7 +691,10 @@ async fn cmd_buddy_revoke(beacon: &str, buddy: &str) -> Result<()> {
 
 async fn cmd_subscription_get(beacon: &str) -> Result<()> {
     let state = load_state()?;
-    let url = format!("{}/v1/principals/me/subscription", beacon.trim_end_matches('/'));
+    let url = format!(
+        "{}/v1/principals/me/subscription",
+        beacon.trim_end_matches('/')
+    );
     let resp = authed_request(&http(), &state, reqwest::Method::GET, url, None).await?;
     let v = ok_json(resp).await.context("subscription get failed")?;
     println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
@@ -653,7 +728,10 @@ async fn cmd_account_cancel_deletion(beacon: &str) -> Result<()> {
 
 async fn cmd_microsoft_observe(beacon: &str, last_sign_in_at: &str) -> Result<()> {
     let state = load_state()?;
-    let url = format!("{}/v1/signals/microsoft/observe", beacon.trim_end_matches('/'));
+    let url = format!(
+        "{}/v1/signals/microsoft/observe",
+        beacon.trim_end_matches('/')
+    );
     let resp = authed_request(
         &http(),
         &state,
@@ -676,7 +754,10 @@ async fn cmd_status(beacon: &str) -> Result<()> {
     println!("Local state");
     println!("  beacon       : {}", state.beacon);
     println!("  email        : {}", state.email.as_deref().unwrap_or("?"));
-    println!("  principal_id : {}", state.principal_id.as_deref().unwrap_or("?"));
+    println!(
+        "  principal_id : {}",
+        state.principal_id.as_deref().unwrap_or("?")
+    );
     println!();
     println!("Vaults");
     let _ = cmd_vault_list(beacon).await;
@@ -699,33 +780,64 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::Signup { email, display_name, plan } => {
-            cmd_signup(&cli.beacon, &email, display_name, &plan).await
-        }
-        Cmd::Vault(VaultCmd::Create { name, cooling_off_seconds }) => {
-            cmd_vault_create(&cli.beacon, &name, cooling_off_seconds).await
-        }
+        Cmd::Signup {
+            email,
+            display_name,
+            plan,
+        } => cmd_signup(&cli.beacon, &email, display_name, &plan).await,
+        Cmd::Vault(VaultCmd::Create {
+            name,
+            cooling_off_seconds,
+        }) => cmd_vault_create(&cli.beacon, &name, cooling_off_seconds).await,
         Cmd::Vault(VaultCmd::List) => cmd_vault_list(&cli.beacon).await,
         Cmd::Vault(VaultCmd::Get { vault }) => cmd_vault_get(&cli.beacon, &vault).await,
         Cmd::Letter(LetterCmd::Seal {
-            vault, title, recipient_email, body, body_file, drill_body, scheduled_release_at,
+            vault,
+            title,
+            recipient_email,
+            body,
+            body_file,
+            drill_body,
+            scheduled_release_at,
         }) => {
             cmd_letter_seal(
-                &cli.beacon, &vault, &title, &recipient_email, body, body_file, drill_body,
+                &cli.beacon,
+                &vault,
+                &title,
+                &recipient_email,
+                body,
+                body_file,
+                drill_body,
                 scheduled_release_at,
             )
             .await
         }
-        Cmd::Letter(LetterCmd::Upload { vault, title, recipient_email, body, files }) => {
-            cmd_letter_upload(&cli.beacon, &vault, &title, &recipient_email, body, files).await
-        }
+        Cmd::Letter(LetterCmd::Upload {
+            vault,
+            title,
+            recipient_email,
+            body,
+            files,
+        }) => cmd_letter_upload(&cli.beacon, &vault, &title, &recipient_email, body, files).await,
         Cmd::Letter(LetterCmd::List { vault }) => cmd_letter_list(&cli.beacon, &vault).await,
         Cmd::Heartbeat => cmd_heartbeat(&cli.beacon).await,
         Cmd::ForceRelease { vault } => cmd_force_release(&cli.beacon, &vault).await,
         Cmd::Cancel { vault } => cmd_cancel(&cli.beacon, &vault).await,
         Cmd::Drill { vault } => cmd_drill(&cli.beacon, &vault).await,
-        Cmd::Buddy(BuddyCmd::Invite { email, display_name, phone, prompt_cadence_days }) => {
-            cmd_buddy_invite(&cli.beacon, &email, display_name, phone, prompt_cadence_days).await
+        Cmd::Buddy(BuddyCmd::Invite {
+            email,
+            display_name,
+            phone,
+            prompt_cadence_days,
+        }) => {
+            cmd_buddy_invite(
+                &cli.beacon,
+                &email,
+                display_name,
+                phone,
+                prompt_cadence_days,
+            )
+            .await
         }
         Cmd::Buddy(BuddyCmd::List) => cmd_buddy_list(&cli.beacon).await,
         Cmd::Buddy(BuddyCmd::Confirm { token }) => cmd_buddy_confirm(&cli.beacon, &token).await,

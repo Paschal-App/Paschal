@@ -122,7 +122,10 @@ async fn buddy_emails_are_unique_per_principal() {
         },
     )
     .await;
-    assert!(err.is_err(), "duplicate buddy emails per principal should fail");
+    assert!(
+        err.is_err(),
+        "duplicate buddy emails per principal should fail"
+    );
 }
 
 // ---- Signal subscriptions + observations ----
@@ -132,16 +135,14 @@ async fn signal_subscription_upsert_replaces() {
     let pool = common::setup().await;
     let (_p, v) = principal_with_vault(&pool).await;
 
-    let s1 =
-        db::upsert_signal_subscription(&pool, v.id, SignalSource::Heartbeat, 0.30, true)
-            .await
-            .unwrap();
+    let s1 = db::upsert_signal_subscription(&pool, v.id, SignalSource::Heartbeat, 0.30, true)
+        .await
+        .unwrap();
     assert!((s1.weight - 0.30).abs() < f32::EPSILON);
 
-    let s2 =
-        db::upsert_signal_subscription(&pool, v.id, SignalSource::Heartbeat, 0.40, false)
-            .await
-            .unwrap();
+    let s2 = db::upsert_signal_subscription(&pool, v.id, SignalSource::Heartbeat, 0.40, false)
+        .await
+        .unwrap();
     assert!((s2.weight - 0.40).abs() < f32::EPSILON);
     assert!(!s2.enabled);
 
@@ -173,9 +174,10 @@ async fn record_and_list_signals() {
     .await
     .unwrap();
 
-    let recent = db::list_recent_signals(&pool, v.id, chrono::Utc::now() - chrono::Duration::days(1))
-        .await
-        .unwrap();
+    let recent =
+        db::list_recent_signals(&pool, v.id, chrono::Utc::now() - chrono::Duration::days(1))
+            .await
+            .unwrap();
     assert_eq!(recent.len(), 2);
 }
 
@@ -190,7 +192,9 @@ async fn apple_shortcut_enrol_and_lookup() {
         .await
         .unwrap();
 
-    let looked = db::fetch_apple_shortcut_sub(&pool, "install-1").await.unwrap();
+    let looked = db::fetch_apple_shortcut_sub(&pool, "install-1")
+        .await
+        .unwrap();
     assert!(looked.is_some());
     let (pid, key) = looked.unwrap();
     assert_eq!(pid, p.id);
@@ -209,7 +213,9 @@ async fn apple_shortcut_touch_updates_timestamp() {
     db::create_apple_shortcut_sub(&pool, p.id, "install-2", &[1u8; 32])
         .await
         .unwrap();
-    db::touch_apple_shortcut_sub(&pool, "install-2").await.unwrap();
+    db::touch_apple_shortcut_sub(&pool, "install-2")
+        .await
+        .unwrap();
     // The schema does the touch via UPDATE; we just confirm no error.
 }
 

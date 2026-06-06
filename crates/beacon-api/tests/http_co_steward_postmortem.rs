@@ -99,7 +99,11 @@ async fn co_steward_powers_are_locked_until_release() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(letters.as_array().unwrap().len(), 0, "no released vaults yet");
+    assert_eq!(
+        letters.as_array().unwrap().len(),
+        0,
+        "no released vaults yet"
+    );
 
     // ... and the write powers are refused.
     let (status, _) = common::send(
@@ -111,7 +115,11 @@ async fn co_steward_powers_are_locked_until_release() {
         ),
     )
     .await;
-    assert_eq!(status, StatusCode::CONFLICT, "edit must be locked pre-release");
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "edit must be locked pre-release"
+    );
 
     let (status, _) = common::send(
         &app.router,
@@ -122,7 +130,11 @@ async fn co_steward_powers_are_locked_until_release() {
         ),
     )
     .await;
-    assert_eq!(status, StatusCode::CONFLICT, "trigger must be locked pre-release");
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "trigger must be locked pre-release"
+    );
 }
 
 #[tokio::test]
@@ -133,7 +145,11 @@ async fn co_steward_updates_contact_then_triggers_event_after_release() {
     // The principal dies: force the release and wait it out (2s cooling-off).
     let (status, _) = common::send(
         &app.router,
-        common::req_post(&format!("/v1/vaults/{vid}/force-release"), json!({}), Some(&token)),
+        common::req_post(
+            &format!("/v1/vaults/{vid}/force-release"),
+            json!({}),
+            Some(&token),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -210,5 +226,9 @@ async fn co_steward_updates_contact_then_triggers_event_after_release() {
         ),
     )
     .await;
-    assert_eq!(status, StatusCode::CONFLICT, "double trigger must be refused");
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "double trigger must be refused"
+    );
 }
