@@ -1,3 +1,4 @@
+[![CD](https://github.com/Paschal-App/Paschal/actions/workflows/cd.yml/badge.svg)](https://github.com/Paschal-App/Paschal/actions/workflows/cd.yml)
 # Paschal
 
 > **Paschal** (PASS-kəl) — named for the great candle kept burning through a vigil. A digital letter of last resort.
