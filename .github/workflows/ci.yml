@@ -160,3 +160,102 @@ jobs:
               } >> "$GITHUB_STEP_SUMMARY"
             fi
           fi
+
+  security:
+    name: Security (OWASP Top 10)
+    runs-on: ubuntu-latest
+    permissions:
+      # Required to upload SARIF results to the GitHub Security tab.
+      security-events: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pre-built cargo-audit binary — no Rust compilation needed.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: apps/principal/pnpm-lock.yaml
+      - name: Install JS dependencies
+        working-directory: apps/principal
+        run: pnpm install --frozen-lockfile
+
+      # ── A01–A10 · Semgrep static analysis ──────────────────────────────────
+      # continue-on-error keeps the job green so findings don't block merges;
+      # remove it once the initial backlog is cleared.
+      - name: Semgrep OWASP Top 10
+        id: semgrep
+        continue-on-error: true
+        run: |
+          pip install semgrep --quiet
+          set +e
+          semgrep --config p/owasp-top-ten --sarif --output semgrep.sarif . 2>/dev/null
+          EC=$?
+          set -e
+          echo "findings=$(jq '.runs[0].results | length' semgrep.sarif 2>/dev/null || echo 0)" \
+            >> "$GITHUB_OUTPUT"
+          exit $EC
+
+      - name: Upload Semgrep SARIF
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep-owasp-top-ten
+
+      # ── A06 · cargo audit (Rust dependencies) ──────────────────────────────
+      - name: cargo audit
+        id: cargo_audit
+        continue-on-error: true
+        run: |
+          set +e
+          cargo audit --json 2>/dev/null > /tmp/cargo-audit.json
+          EC=$?
+          set -e
+          echo "vulns=$(jq '.vulnerabilities.count // 0' /tmp/cargo-audit.json 2>/dev/null || echo 0)" \
+            >> "$GITHUB_OUTPUT"
+          exit $EC
+
+      # ── A06 · pnpm audit (JS dependencies) ─────────────────────────────────
+      - name: pnpm audit
+        id: pnpm_audit
+        continue-on-error: true
+        working-directory: apps/principal
+        run: |
+          set +e
+          pnpm audit --json 2>/dev/null > /tmp/pnpm-audit.json
+          EC=$?
+          set -e
+          echo "vulns=$(jq '.metadata.vulnerabilities.total // 0' /tmp/pnpm-audit.json 2>/dev/null || echo 0)" \
+            >> "$GITHUB_OUTPUT"
+          exit $EC
+
+      - name: Job summary
+        if: always()
+        run: |
+          SEMGREP="${{ steps.semgrep.outputs.findings }}"
+          CARGO="${{ steps.cargo_audit.outputs.vulns }}"
+          PNPM="${{ steps.pnpm_audit.outputs.vulns }}"
+
+          badge() { [[ "${1:-0}" -eq 0 ]] && echo "✅" || echo "⚠️"; }
+
+          {
+            echo "## 🔒 Security — OWASP Top 10"
+            echo ""
+            echo "| | Scanner | Coverage | Findings |"
+            echo "| --- | --- | --- | ---: |"
+            echo "| $(badge "$SEMGREP") | **Semgrep** \`p/owasp-top-ten\` | A01–A10 static analysis | ${SEMGREP:-0} |"
+            echo "| $(badge "$CARGO")  | **cargo audit**                 | A06 · Rust deps         | ${CARGO:-0} |"
+            echo "| $(badge "$PNPM")   | **pnpm audit**                  | A06 · JS deps           | ${PNPM:-0} |"
+            echo ""
+            echo "_Semgrep findings are also filed as [code scanning alerts](https://github.com/${{ github.repository }}/security/code-scanning)._"
+          } >> "$GITHUB_STEP_SUMMARY"
