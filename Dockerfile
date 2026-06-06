@@ -18,7 +18,7 @@ RUN rm -rf node_modules .svelte-kit build \
  && pnpm build
 
 # ---- Rust planner -----------------------------------------------------------
-FROM rust:1.95-slim AS chef-planner
+FROM rust:1.95-slim-bookworm AS chef-planner
 WORKDIR /build
 RUN cargo install cargo-chef --locked --version 0.1.71
 # We don't need the frontend to compute the recipe.
@@ -26,7 +26,7 @@ COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
 
 # ---- Rust builder -----------------------------------------------------------
-FROM rust:1.95-slim AS chef-builder
+FROM rust:1.95-slim-bookworm AS chef-builder
 WORKDIR /build
 RUN apt-get update \
  && apt-get install -y --no-install-recommends pkg-config libssl-dev \
