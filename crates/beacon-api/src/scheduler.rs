@@ -216,8 +216,7 @@ async fn aggregator_tick(state: &AppState) -> anyhow::Result<()> {
         // Bank dormancy (CDR_BANK_DORMANCY) — webhook-based proof-of-life.
         // A fresh ping within the last 5× heartbeat window keeps the score low.
         if let Some(w) = weight_for(SignalSource::Cdr) {
-            let since = now
-                - chrono::Duration::seconds(state.config.heartbeat_max_gap_seconds * 5);
+            let since = now - chrono::Duration::seconds(state.config.heartbeat_max_gap_seconds * 5);
             let pings = db::list_bank_dormancy_subs_with_recent_ping(
                 &state.pool,
                 vault.principal_id,
