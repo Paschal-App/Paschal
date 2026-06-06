@@ -1,13 +1,13 @@
 name: CD
 
 # Runs on every push to main. Re-runs the full CI suite first, then builds and
-# pushes the Docker image, deploys to the production server, and finally runs
-# the Playwright live smoke suite against the real deployment.
+# pushes the Docker image, spins it up on the runner, and runs the Playwright
+# smoke suite against the live local instance.
 on:
   push:
     branches: [main]
 
-# One deployment at a time — don't cancel in-progress deploys.
+# One deployment at a time — don't cancel in-progress runs.
 concurrency:
   group: deploy-main
   cancel-in-progress: false
@@ -61,54 +61,62 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # ── 3. Deploy ──────────────────────────────────────────────────────────────
+  # ── 3. Smoke — spin up on the runner itself ─────────────────────────────────
   #
-  # Prerequisites on the target server:
-  #   - Docker + Docker Compose v2 installed
-  #   - Project checked out to /opt/paschal with a .env file in place
-  #   - GHCR pre-authenticated: docker login ghcr.io -u <user> -p <PAT>
-  #
-  # Required repository secrets:
-  #   DEPLOY_HOST   — server hostname or IP
-  #   DEPLOY_USER   — SSH user (needs docker access)
-  #   DEPLOY_KEY    — SSH private key (Ed25519 or RSA)
-  deploy:
-    name: Deploy to production
+  # Pulls the freshly-published image, starts Beacon + Postgres on the runner,
+  # and runs the Playwright chromium-live suite against http://localhost:8080.
+  # No SSH keys, no external secrets, no production involved.
+  smoke:
+    name: Smoke — runner deployment
     needs: publish
     runs-on: ubuntu-latest
-    environment: production
-    steps:
-      - uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_KEY }}
-          script: |
-            set -euo pipefail
-            cd /opt/paschal
-            docker compose pull beacon
-            docker compose up -d --no-deps beacon
-            # Remove images older than 24 h to keep the server tidy.
-            docker image prune -f --filter "until=24h"
-
-  # ── 4. Live smoke tests ────────────────────────────────────────────────────
-  #
-  # Runs the tests/live/ Playwright suite against the freshly-deployed instance.
-  # Skipped gracefully when Cloudflare Access secrets are absent (e.g. forks).
-  #
-  # Required repository secrets:
-  #   PLAYWRIGHT_BASE_URL        — public URL of the deployment (https://…)
-  #   CF_ACCESS_CLIENT_ID        — Cloudflare Access service-token client ID
-  #   CF_ACCESS_CLIENT_SECRET    — Cloudflare Access service-token secret
-  smoke:
-    name: Live smoke tests
-    needs: deploy
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: apps/principal
+    permissions:
+      packages: read
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: paschal
+          POSTGRES_PASSWORD: paschal
+          POSTGRES_DB: paschal
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Start Beacon
+        run: |
+          docker run -d \
+            --name beacon \
+            --network host \
+            -e DATABASE_URL=postgresql://paschal:paschal@localhost:5432/paschal \
+            -e BEACON_PUBLIC_BASE_URL=http://localhost:8080 \
+            ghcr.io/paschal-app/paschal:${{ needs.publish.outputs.image_tag }}
+
+      - name: Wait for Beacon to be healthy
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/livez; then
+              echo "Beacon is up"
+              exit 0
+            fi
+            echo "Waiting… ($i/30)"
+            sleep 2
+          done
+          echo "Beacon did not start in time — logs:"
+          docker logs beacon
+          exit 1
 
       - uses: pnpm/action-setup@v4
         with:
@@ -121,17 +129,22 @@ jobs:
           cache-dependency-path: apps/principal/pnpm-lock.yaml
 
       - name: Install dependencies
+        working-directory: apps/principal
         run: pnpm install --frozen-lockfile
 
       - name: Install Playwright browsers
+        working-directory: apps/principal
         run: npx playwright install chromium --with-deps
 
-      - name: Run live smoke suite
+      - name: Run smoke suite
+        working-directory: apps/principal
         run: npx playwright test --project=chromium-live
         env:
-          PLAYWRIGHT_BASE_URL: ${{ secrets.PLAYWRIGHT_BASE_URL }}
-          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
-          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+          PLAYWRIGHT_BASE_URL: http://localhost:8080
+
+      - name: Beacon logs on failure
+        if: failure()
+        run: docker logs beacon
 
       - name: Upload smoke report
         if: failure()
