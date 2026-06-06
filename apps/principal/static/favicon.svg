@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="Paschal">
+  <title>Paschal</title>
+  <circle cx="16" cy="16" r="14" fill="none" stroke="#0E1B33" stroke-width="1.5"/>
+  <path d="M 16 7 C 19 12 21 15.5 21 19 A 5 5 0 1 1 11 19 C 11 15 13.5 11.5 16 7 Z" fill="#C8861E"/>
+  <rect x="15.2" y="23.2" width="1.6" height="3" fill="#0E1B33"/>
+</svg>

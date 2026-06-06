@@ -1,0 +1,32 @@
+[package]
+name = "crypto-stub"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+# Pulls in the AWS SDK for the production KMS backend (persistent wrapped DEK).
+# Off by default so the fast unit-test stage stays light; beacon-api enables it.
+aws = ["dep:aws-config", "dep:aws-sdk-kms", "dep:aws-sdk-secretsmanager"]
+
+[dependencies]
+aes-gcm.workspace = true
+rand.workspace = true
+base64.workspace = true
+sha2.workspace = true
+hex = { workspace = true }
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+async-trait = "0.1"
+aws-config = { workspace = true, optional = true }
+aws-sdk-kms = { workspace = true, optional = true }
+aws-sdk-secretsmanager = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
+proptest.workspace = true

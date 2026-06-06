@@ -1,0 +1,27 @@
+[package]
+name = "blob-store"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+# Pulls in the AWS SDK for the S3-backed store. Off by default so the fast
+# unit-test stage and local builds stay light; beacon-api enables it.
+aws = ["dep:aws-config", "dep:aws-sdk-s3"]
+
+[dependencies]
+async-trait = "0.1"
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+aws-config = { workspace = true, optional = true }
+aws-sdk-s3 = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

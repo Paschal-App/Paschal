@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Paschal — Claim</title>
+    <style>
+      :root {
+        --ink: #0e1b33;
+        --parchment: #f4ecd8;
+        --vellum: #faf6e7;
+        --slate: #3a455e;
+        --mist: #d8d2bd;
+        --burgundy: #6b1a1a;
+        --verdigris: #3f6b5e;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; background: var(--parchment); color: var(--ink); }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, sans-serif;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 96px 24px 64px;
+      }
+      main {
+        width: 100%;
+        max-width: 720px;
+        background: var(--vellum);
+        border: 1px solid var(--mist);
+        padding: 48px 56px;
+      }
+      .eyebrow {
+        font-size: 11px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--slate);
+        margin-bottom: 24px;
+      }
+      .banner {
+        margin-bottom: 24px;
+        padding: 16px 20px;
+        border-left: 3px solid var(--burgundy);
+        background: rgba(107, 26, 26, 0.06);
+        font-size: 14px;
+      }
+      .banner.drill {
+        border-color: var(--verdigris);
+        background: rgba(63, 107, 94, 0.07);
+        color: var(--ink);
+      }
+      h1 {
+        font-family: "Tiempos Headline", "GT Sectra", "Cormorant Garamond", Georgia, serif;
+        font-size: 36px;
+        line-height: 1.2;
+        font-weight: 400;
+        margin: 0 0 8px 0;
+        letter-spacing: -0.01em;
+      }
+      .meta { color: var(--slate); font-size: 14px; margin-bottom: 24px; }
+      hr {
+        border: 0;
+        border-top: 0.5px solid var(--mist);
+        margin: 32px 0;
+      }
+      pre.body {
+        font-family: ui-serif, Georgia, "Times New Roman", serif;
+        font-size: 17px;
+        line-height: 1.7;
+        white-space: pre-wrap;
+        margin: 0;
+      }
+      .status {
+        margin-top: 24px;
+        padding: 12px 16px;
+        border-left: 3px solid var(--burgundy);
+        background: rgba(107, 26, 26, 0.04);
+        font-size: 14px;
+      }
+      .status.ok { border-color: var(--verdigris); background: rgba(63, 107, 94, 0.06); }
+      .attachments {
+        margin-top: 24px;
+      }
+      .attachments h2 {
+        font-family: "Tiempos Headline", "GT Sectra", Georgia, serif;
+        font-size: 22px;
+        font-weight: 400;
+        margin: 0 0 8px 0;
+      }
+      .attachments p { color: var(--slate); font-size: 14px; margin: 0 0 16px 0; }
+      .attachments ul { list-style: none; padding: 0; margin: 0; }
+      .attachments li {
+        padding: 12px 16px;
+        background: white;
+        border: 1px solid var(--mist);
+        margin-bottom: 8px;
+      }
+      .attachments .filename {
+        font-weight: 600;
+        font-size: 15px;
+      }
+      .attachments .sub {
+        font-size: 13px;
+        color: var(--slate);
+        margin-top: 4px;
+      }
+      footer {
+        color: var(--slate);
+        font-size: 12px;
+        margin-top: 48px;
+        max-width: 720px;
+        text-align: center;
+      }
+      footer a { color: var(--slate); }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div id="banner" class="banner" hidden></div>
+      <div class="eyebrow" id="eyebrow">Paschal — Claim</div>
+      <h1 id="title">Reaching the Beacon&hellip;</h1>
+      <div class="meta" id="meta"></div>
+      <hr />
+      <pre class="body" id="body"></pre>
+      <div id="attachments-section" class="attachments" hidden>
+        <h2>Attachments</h2>
+        <p id="attachments-note">
+          Each link below works once. Open them now if you want to save copies.
+        </p>
+        <ul id="attachments-list"></ul>
+      </div>
+      <div class="status" id="status" hidden></div>
+    </main>
+
+    <footer>
+      <p>
+        Paschal is a digital continuity service. The transparency log
+        entry for this delivery is recorded.
+        If anything in this page surprises you, reply to the email that
+        brought you here — a person will answer.
+      </p>
+    </footer>
+
+    <script>
+      (async () => {
+        const params = new URLSearchParams(window.location.search);
+        const token = params.get("token");
+        const titleEl = document.getElementById("title");
+        const metaEl = document.getElementById("meta");
+        const bodyEl = document.getElementById("body");
+        const statusEl = document.getElementById("status");
+        const bannerEl = document.getElementById("banner");
+        const attachmentsSection = document.getElementById("attachments-section");
+        const attachmentsList = document.getElementById("attachments-list");
+
+        function showStatus(text, ok) {
+          statusEl.textContent = text;
+          statusEl.classList.toggle("ok", !!ok);
+          statusEl.hidden = false;
+        }
+        function showBanner(text, kind) {
+          bannerEl.textContent = text;
+          bannerEl.className = "banner" + (kind ? " " + kind : "");
+          bannerEl.hidden = false;
+        }
+
+        if (!token) {
+          titleEl.textContent = "Missing claim token";
+          showStatus(
+            "This page must be opened from the link sent to your email.",
+            false
+          );
+          return;
+        }
+
+        try {
+          const resp = await fetch(
+            `/v1/releases/claim?token=${encodeURIComponent(token)}`
+          );
+          if (!resp.ok) {
+            const t = await resp.text().catch(() => "");
+            if (resp.status === 404) {
+              titleEl.textContent = "This claim is no longer available";
+              showStatus(
+                "The token is invalid, already used, or expired. " +
+                  "If you opened this page earlier, the content has been consumed " +
+                  "and cannot be loaded again. Reply to the email if you need help.",
+                false
+              );
+            } else {
+              titleEl.textContent = "Could not open this claim";
+              showStatus(`HTTP ${resp.status}: ${t}`, false);
+            }
+            return;
+          }
+          const data = await resp.json();
+
+          if (data.is_drill) {
+            showBanner(
+              "Rehearsal — the principal is rehearsing this system. This is a drill, not a real release.",
+              "drill"
+            );
+          }
+
+          titleEl.textContent = data.title || "Released Letter";
+          metaEl.textContent = `Delivered to ${data.recipient_email || "you"}.`;
+          bodyEl.textContent = data.body || "";
+
+          // The list of attachment links lives in the email — they each
+          // have their own one-time token. We don't have those here, but
+          // we can prompt the recipient to check the email.
+          if (window.location.hash.startsWith("#with-attachments")) {
+            attachmentsList.innerHTML =
+              '<li><span class="filename">See your email</span>' +
+              '<div class="sub">Attachment download links are in the release ' +
+              'notification email — each link works once.</div></li>';
+            attachmentsSection.hidden = false;
+          }
+
+          showStatus(
+            "Reading this page consumed the token. The page cannot be reloaded; " +
+              "save what you need now.",
+            true
+          );
+        } catch (e) {
+          titleEl.textContent = "Could not reach the Beacon";
+          showStatus(String(e), false);
+        }
+      })();
+    </script>
+  </body>
+</html>

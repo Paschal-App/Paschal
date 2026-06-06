@@ -1,0 +1,70 @@
+# Paschal — self-hosted, single-node Docker stack.
+#
+# Postgres + the Beacon (HTTP API with the web app compiled in). Database
+# migrations run in-process the first time the Beacon boots. Copy
+# .env.example to .env and set POSTGRES_PASSWORD before bringing this up.
+#
+#   docker compose up -d --build
+#   open http://localhost:8080/app
+services:
+  postgres:
+    image: postgres:16
+    container_name: paschal-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-paschal}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-paschal}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-paschal} -d $${POSTGRES_DB:-paschal}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  beacon:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: paschal/beacon:latest
+    container_name: paschal-beacon
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-paschal}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-paschal}
+      BEACON_BIND: 0.0.0.0:8080
+      BEACON_PUBLIC_BASE_URL: ${BEACON_PUBLIC_BASE_URL:-http://localhost:8080}
+      # Fully local — no cloud dependency. The encryption key lives in the
+      # beacon_data volume at /var/lib/paschal/kms.key (BACK IT UP — see README).
+      KMS_BACKEND: local
+      BLOB_BACKEND: local
+      BEACON_KMS_KEY_PATH: /var/lib/paschal/kms.key
+      BEACON_BLOB_ROOT: /var/lib/paschal/blobs
+      BEACON_LOG_FORMAT: json
+      RUST_LOG: info
+      # Behaviour knobs (seconds unless noted). Defaults match production.
+      COOLING_OFF_SECONDS: ${COOLING_OFF_SECONDS:-1209600}            # 14 days
+      HEARTBEAT_MAX_GAP_SECONDS: ${HEARTBEAT_MAX_GAP_SECONDS:-604800} # 7 days
+      AGGREGATOR_TICK_SECONDS: ${AGGREGATOR_TICK_SECONDS:-300}        # 5 min
+      TRIAL_DAYS: ${TRIAL_DAYS:-30}
+      RETENTION_DAYS: ${RETENTION_DAYS:-1095}                         # 3 years
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-16777216}                 # 16 MB
+      MAX_REQUEST_BYTES: ${MAX_REQUEST_BYTES:-33554432}               # 32 MB
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-240}
+    volumes:
+      - beacon_data:/var/lib/paschal
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
+
+volumes:
+  postgres_data:
+  beacon_data:

@@ -1,0 +1,23 @@
+target/
+.git/
+.github/
+.idea/
+.vscode/
+specs/
+style-guide/
+# Keep docs/openapi.yaml — it's include_str!'d into the binary.
+# Exclude the other docs/* files we don't compile in.
+docs/*.md
+.env
+.env.*
+logs/
+kms.key
+*.log
+.DS_Store
+node_modules/
+backup-*.tar
+restore-tmp/
+blobs/
+# Frontend build artifacts — the Docker Node stage rebuilds them.
+apps/principal/build/
+apps/principal/.svelte-kit/
