@@ -1,0 +1,139 @@
+name: CD
+
+# Runs on every push to main. Re-runs the full CI suite first, then builds and
+# pushes the Docker image, deploys to the production server, and finally runs
+# the Playwright live smoke suite against the real deployment.
+on:
+  push:
+    branches: [main]
+
+# One deployment at a time — don't cancel in-progress deploys.
+concurrency:
+  group: deploy-main
+  cancel-in-progress: false
+
+jobs:
+  # ── 1. CI ──────────────────────────────────────────────────────────────────
+  ci:
+    name: CI checks
+    uses: ./.github/workflows/ci.yml
+
+  # ── 2. Build & push image ──────────────────────────────────────────────────
+  publish:
+    name: Build & push Docker image
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      # The short SHA tag, e.g. "sha-abc1234", used downstream.
+      image_tag: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ghcr.io/paschal-app/paschal
+          tags: |
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Layer cache via GitHub Actions cache — keeps rebuilds fast.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── 3. Deploy ──────────────────────────────────────────────────────────────
+  #
+  # Prerequisites on the target server:
+  #   - Docker + Docker Compose v2 installed
+  #   - Project checked out to /opt/paschal with a .env file in place
+  #   - GHCR pre-authenticated: docker login ghcr.io -u <user> -p <PAT>
+  #
+  # Required repository secrets:
+  #   DEPLOY_HOST   — server hostname or IP
+  #   DEPLOY_USER   — SSH user (needs docker access)
+  #   DEPLOY_KEY    — SSH private key (Ed25519 or RSA)
+  deploy:
+    name: Deploy to production
+    needs: publish
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          script: |
+            set -euo pipefail
+            cd /opt/paschal
+            docker compose pull beacon
+            docker compose up -d --no-deps beacon
+            # Remove images older than 24 h to keep the server tidy.
+            docker image prune -f --filter "until=24h"
+
+  # ── 4. Live smoke tests ────────────────────────────────────────────────────
+  #
+  # Runs the tests/live/ Playwright suite against the freshly-deployed instance.
+  # Skipped gracefully when Cloudflare Access secrets are absent (e.g. forks).
+  #
+  # Required repository secrets:
+  #   PLAYWRIGHT_BASE_URL        — public URL of the deployment (https://…)
+  #   CF_ACCESS_CLIENT_ID        — Cloudflare Access service-token client ID
+  #   CF_ACCESS_CLIENT_SECRET    — Cloudflare Access service-token secret
+  smoke:
+    name: Live smoke tests
+    needs: deploy
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/principal
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: apps/principal/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright browsers
+        run: npx playwright install chromium --with-deps
+
+      - name: Run live smoke suite
+        run: npx playwright test --project=chromium-live
+        env:
+          PLAYWRIGHT_BASE_URL: ${{ secrets.PLAYWRIGHT_BASE_URL }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+
+      - name: Upload smoke report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-report
+          path: apps/principal/playwright-report/
+          retention-days: 7
