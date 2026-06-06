@@ -897,7 +897,7 @@ pub async fn apple_icloud_enrol(
     // Generate a 32-byte secret. The Shortcut will store this and HMAC each ping.
     let mut secret = [0u8; 32];
     use rand::RngCore;
-    rand::rngs::OsRng.fill_bytes(&mut secret);
+    rand::rng().fill_bytes(&mut secret);
 
     db::create_apple_shortcut_sub(&state.pool, pid, &body.installation_id, &secret).await?;
 
@@ -2660,7 +2660,7 @@ pub async fn bank_dormancy_enrol(
     let webhook_id = Uuid::new_v4();
     let mut secret = [0u8; 32];
     use rand::RngCore;
-    rand::rngs::OsRng.fill_bytes(&mut secret);
+    rand::rng().fill_bytes(&mut secret);
 
     db::create_bank_dormancy_sub(&state.pool, pid, webhook_id, &secret).await?;
     let url = format!(

@@ -555,21 +555,16 @@ impl Subscription {
 /// storage-location choice (latency, data-locality preference) offered on the
 /// Estate+ and Legacy plans — not a hard data-residency guarantee. See
 /// `specs/05-domain-model.md` and `specs/12-subscription-billing-and-retention.md`.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StorageRegion {
     /// Sydney, Australia — the Beacon's primary region and the default.
+    #[default]
     ApSoutheast2,
     /// Frankfurt, Germany — European storage.
     EuCentral1,
     /// N. Virginia, United States — North American storage.
     UsEast1,
-}
-
-impl Default for StorageRegion {
-    fn default() -> Self {
-        Self::ApSoutheast2
-    }
 }
 
 impl StorageRegion {

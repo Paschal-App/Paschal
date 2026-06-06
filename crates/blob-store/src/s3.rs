@@ -64,7 +64,7 @@ impl S3Store {
         prefix: impl Into<String>,
         kms_key_id: Option<String>,
     ) -> Self {
-        let cfg = aws_config::from_env()
+        let cfg = aws_config::defaults(aws_config::BehaviorVersion::latest())
             .region(Region::new(region.into()))
             .load()
             .await;

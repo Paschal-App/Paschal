@@ -30,7 +30,7 @@ pub struct AwsKms {
 
 impl AwsKms {
     pub async fn from_env(wrapped_dek_secret_id: impl Into<String>) -> Self {
-        let cfg = aws_config::load_from_env().await;
+        let cfg = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
         Self {
             kms: aws_sdk_kms::Client::new(&cfg),
             secrets: aws_sdk_secretsmanager::Client::new(&cfg),

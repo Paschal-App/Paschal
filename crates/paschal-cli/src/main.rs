@@ -384,6 +384,7 @@ async fn cmd_vault_get(beacon: &str, vault: &str) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn cmd_letter_seal(
     beacon: &str,
     vault: &str,

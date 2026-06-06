@@ -109,9 +109,7 @@ pub async fn middleware(
             let mut resp = (
                 StatusCode::TOO_MANY_REQUESTS,
                 [("content-type", "application/problem+json")],
-                format!(
-                    r#"{{"type":"https://paschal.com/errors/rate_limited","title":"rate_limited","status":429,"detail":"per-IP rate limit reached"}}"#
-                ),
+                r#"{"type":"https://paschal.com/errors/rate_limited","title":"rate_limited","status":429,"detail":"per-IP rate limit reached"}"#.to_string(),
             )
                 .into_response();
             if let Ok(v) = HeaderValue::from_str(&retry_after_secs.to_string()) {

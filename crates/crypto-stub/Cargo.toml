@@ -16,6 +16,9 @@ aws = ["dep:aws-config", "dep:aws-sdk-kms", "dep:aws-sdk-secretsmanager"]
 [dependencies]
 aes-gcm.workspace = true
 rand.workspace = true
+# rand_core 0.6 is pinned to match aes-gcm 0.10's re-exported OsRng so that
+# RngCore::fill_bytes resolves to the same trait version as the one OsRng impls.
+rand_core = "0.6"
 base64.workspace = true
 sha2.workspace = true
 hex = { workspace = true }

@@ -18,6 +18,12 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # include_dir! in beacon-api/src/spa.rs embeds the SvelteKit build at
+      # compile time and panics if the directory is absent. Create a stub so
+      # clippy passes without a full frontend build in the Rust-only CI job.
+      - name: Create SPA stub directory
+        run: mkdir -p apps/principal/build
+
       - name: fmt
         id: fmt
         run: cargo fmt --all --check

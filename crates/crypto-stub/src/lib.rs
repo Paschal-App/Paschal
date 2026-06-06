@@ -15,7 +15,7 @@ use aes_gcm::{
     Aes256Gcm, Key, Nonce,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use rand::RngCore;
+use rand_core::RngCore;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::{

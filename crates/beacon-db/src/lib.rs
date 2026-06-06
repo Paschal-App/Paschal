@@ -1405,18 +1405,15 @@ pub async fn fetch_open_release(
     .bind(vault_id.as_uuid())
     .fetch_optional(pool)
     .await?;
-    Ok(match row {
-        Some(row) => Some(ReleaseEvent {
-            id: ReleaseEventId(row.get("id")),
-            vault_id: VaultId(row.get("vault_id")),
-            reason: ReleaseReason::SignalTrigger, // skeleton: we don't parse it back
-            triggered_at: row.get("triggered_at"),
-            released_at: row.try_get("released_at").ok(),
-            cancelled_at: row.try_get("cancelled_at").ok(),
-            is_drill: row.try_get("is_drill").unwrap_or(false),
-        }),
-        None => None,
-    })
+    Ok(row.map(|row| ReleaseEvent {
+        id: ReleaseEventId(row.get("id")),
+        vault_id: VaultId(row.get("vault_id")),
+        reason: ReleaseReason::SignalTrigger, // skeleton: we don't parse it back
+        triggered_at: row.get("triggered_at"),
+        released_at: row.try_get("released_at").ok(),
+        cancelled_at: row.try_get("cancelled_at").ok(),
+        is_drill: row.try_get("is_drill").unwrap_or(false),
+    }))
 }
 
 pub async fn issue_release_claim(
