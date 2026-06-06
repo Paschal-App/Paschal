@@ -61,7 +61,7 @@ rand = "0.8"
 base64 = "0.22"
 sha2 = "0.10"
 hex = "0.4"
-hmac = "0.12"
+hmac = "0.13"
 subtle = "2"
 
 # CLI
