@@ -1,6 +1,8 @@
 [![CD](https://github.com/Paschal-App/Paschal/actions/workflows/cd.yml/badge.svg)](https://github.com/Paschal-App/Paschal/actions/workflows/cd.yml)
 [![Dependabot Updates](https://github.com/Paschal-App/Paschal/actions/workflows/dependabot/dependabot-updates/badge.svg)](https://github.com/Paschal-App/Paschal/actions/workflows/dependabot/dependabot-updates)
-🔥✉️ # Paschal
+
+🔥✉️ 
+# Paschal
 
 > **Paschal** (PASS-kəl) — named for the great candle kept burning through a vigil. A digital letter of last resort.
 
