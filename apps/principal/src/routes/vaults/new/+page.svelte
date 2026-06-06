@@ -15,7 +15,7 @@
 
   let name = $state('');
   let coolingOffSeconds = $state('1209600'); // 14 days
-  let storageRegion = $state(STORAGE_REGIONS[0].code);
+  let storageRegion = $state(STORAGE_REGIONS[0]?.code ?? '');
   let multiRegion = $state(false);
   let submitting = $state(false);
   let error = $state<string | null>(null);

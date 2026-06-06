@@ -1,14 +1,16 @@
 <script lang="ts">
+  import type { HTMLInputAttributes } from 'svelte/elements';
+
   type Props = {
     label: string;
-    value: string;
+    value?: string;
     name?: string;
     type?: 'text' | 'email' | 'password' | 'datetime-local' | 'number';
     placeholder?: string;
     required?: boolean;
     help?: string;
     error?: string;
-    autocomplete?: string;
+    autocomplete?: HTMLInputAttributes['autocomplete'];
     min?: string;
     list?: string;
     onchange?: (v: string) => void;

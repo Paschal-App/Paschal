@@ -80,6 +80,15 @@ export interface PublicPlan {
   allowed_signals: string[];
   multi_region: boolean;
   notes: string[];
+  // Presentation fields — present when the API includes them.
+  tier?: string;
+  cadence?: string;
+  display_price?: string;
+  price_usd_minor?: number;
+  sms_recipients_allowed?: boolean;
+  priority_support?: boolean;
+  concierge_dunning?: boolean;
+  published_audit?: boolean;
 }
 
 export function listPlans() {

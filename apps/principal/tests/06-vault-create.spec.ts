@@ -5,7 +5,7 @@
 // (J3). The cooling-off window is configurable, with a 14-day default (J3
 // hire criterion: "Cooling-off window is configurable (14d default)").
 
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page, type Route } from '@playwright/test';
 import { BASE, injectSession, MOCK_VAULT, MOCK_PLANS, MOCK_SUBSCRIPTION } from './fixtures';
 
 test.describe('New Vault form (/vaults/new)', () => {
@@ -112,11 +112,11 @@ test.describe('New Vault form (/vaults/new)', () => {
 // spec 12 §1 + spec 05 "Attachment storage region": only Estate+/Legacy may
 // choose where a Vault's attachment blobs live.
 test.describe('Storage region picker (Estate+/Legacy gating)', () => {
-  async function mockPlanContext(page, planId: string) {
-    await page.route('**/v1/principals/me/subscription', route =>
+  async function mockPlanContext(page: Page, planId: string) {
+    await page.route('**/v1/principals/me/subscription', (route: Route) =>
       route.fulfill({ json: { ...MOCK_SUBSCRIPTION, plan_id: planId } })
     );
-    await page.route('**/v1/plans', route => route.fulfill({ json: MOCK_PLANS }));
+    await page.route('**/v1/plans', (route: Route) => route.fulfill({ json: MOCK_PLANS }));
   }
 
   test('hidden on a plan without multi_region (Estate)', async ({ page }) => {

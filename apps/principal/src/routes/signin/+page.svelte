@@ -95,7 +95,7 @@
             {#if monthly && annual}
               <p class="alt">
                 or {annual.display_price}
-                ({Math.round((1 - annual.price_usd_minor / (monthly.price_usd_minor * 12)) * 100)}% off)
+                ({Math.round((1 - annual.price_usd_minor! / (monthly.price_usd_minor! * 12)) * 100)}% off)
               </p>
             {/if}
             <ul class="facts">

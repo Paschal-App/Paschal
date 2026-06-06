@@ -1,10 +1,10 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
-  type Props = { title?: string; eyebrow?: string; children: Snippet; actions?: Snippet };
-  let { title, eyebrow, children, actions }: Props = $props();
+  type Props = { title?: string; eyebrow?: string; id?: string; children: Snippet; actions?: Snippet };
+  let { title, eyebrow, id, children, actions }: Props = $props();
 </script>
 
-<section class="card">
+<section class="card" {id}>
   {#if eyebrow || title || actions}
     <header>
       <div>

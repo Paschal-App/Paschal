@@ -225,13 +225,13 @@
 
     <Card eyebrow="LETTERS" title="Sealed Letters">
       {#snippet actions()}
-        <Button href={`${base}/letters/new?vault=${vault.id}`}>Compose new</Button>
+        <Button href={`${base}/letters/new?vault=${vault!.id}`}>Compose new</Button>
       {/snippet}
       {#snippet children()}
         {#if letters.length === 0}
           <p>No Letters in this Vault yet.</p>
           <p class="dim">
-            Begin with <a href={`${base}/letters/new?vault=${vault.id}`}>your first Letter</a> —
+            Begin with <a href={`${base}/letters/new?vault=${vault!.id}`}>your first Letter</a> —
             a message, credentials, or instructions for one named Recipient.
           </p>
         {:else}
@@ -270,13 +270,13 @@
             </select>
             <Button
               onclick={doMoveRegion}
-              disabled={movingRegion || targetRegion === vault.storage_region}
+              disabled={movingRegion || targetRegion === vault!.storage_region}
             >
               {movingRegion ? 'Moving…' : 'Move region'}
             </Button>
           </div>
-          {#if targetRegion === vault.storage_region}
-            <p class="dim region-current">Currently stored in {vault.storage_region_label}.</p>
+          {#if targetRegion === vault!.storage_region}
+            <p class="dim region-current">Currently stored in {vault!.storage_region_label}.</p>
           {/if}
         {/snippet}
       </Card>
