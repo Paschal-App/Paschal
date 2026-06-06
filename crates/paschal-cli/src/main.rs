@@ -193,12 +193,8 @@ enum BuddyCmd {
 
 #[derive(Subcommand, Debug)]
 enum SubCmd {
-    /// Show the current Subscription.
+    /// Show the current Subscription state.
     Get,
-    /// Cancel the Subscription (enters retention window).
-    Cancel,
-    /// Reactivate a canceled Subscription within retention.
-    Reactivate,
 }
 
 #[derive(Subcommand, Debug)]
@@ -621,18 +617,11 @@ async fn cmd_buddy_revoke(beacon: &str, buddy: &str) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_subscription(beacon: &str, action: &str) -> Result<()> {
+async fn cmd_subscription_get(beacon: &str) -> Result<()> {
     let state = load_state()?;
-    let path = match action {
-        "get" => "/v1/principals/me/subscription",
-        "cancel" => "/v1/principals/me/subscription/cancel",
-        "reactivate" => "/v1/principals/me/subscription/reactivate",
-        _ => unreachable!(),
-    };
-    let url = format!("{}{}", beacon.trim_end_matches('/'), path);
-    let method = if action == "get" { reqwest::Method::GET } else { reqwest::Method::POST };
-    let resp = authed_request(&http(), &state, method, url, None).await?;
-    let v = ok_json(resp).await.context("subscription op failed")?;
+    let url = format!("{}/v1/principals/me/subscription", beacon.trim_end_matches('/'));
+    let resp = authed_request(&http(), &state, reqwest::Method::GET, url, None).await?;
+    let v = ok_json(resp).await.context("subscription get failed")?;
     println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
     Ok(())
 }
@@ -744,9 +733,7 @@ async fn main() -> Result<()> {
             cmd_buddy_respond(&cli.beacon, &buddy, &response).await
         }
         Cmd::Buddy(BuddyCmd::Revoke { buddy }) => cmd_buddy_revoke(&cli.beacon, &buddy).await,
-        Cmd::Subscription(SubCmd::Get) => cmd_subscription(&cli.beacon, "get").await,
-        Cmd::Subscription(SubCmd::Cancel) => cmd_subscription(&cli.beacon, "cancel").await,
-        Cmd::Subscription(SubCmd::Reactivate) => cmd_subscription(&cli.beacon, "reactivate").await,
+        Cmd::Subscription(SubCmd::Get) => cmd_subscription_get(&cli.beacon).await,
         Cmd::Account(AccountCmd::Delete) => cmd_account_delete(&cli.beacon).await,
         Cmd::Account(AccountCmd::CancelDeletion) => cmd_account_cancel_deletion(&cli.beacon).await,
         Cmd::MicrosoftObserve { last_sign_in_at } => {

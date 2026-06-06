@@ -71,10 +71,6 @@ export function signup(args: { email: string; display_name?: string; plan?: stri
 
 export interface PublicPlan {
   plan_id: string;
-  tier: string;
-  cadence: 'free' | 'monthly' | 'annual';
-  display_price: string;
-  price_usd_minor: number;
   storage_bytes: number;
   retention_days: number;
   scheduled_horizon_days: number;
@@ -82,10 +78,6 @@ export interface PublicPlan {
   max_letters_per_vault: number;
   max_trustees: number;
   allowed_signals: string[];
-  sms_recipients_allowed: boolean;
-  priority_support: boolean;
-  concierge_dunning: boolean;
-  published_audit: boolean;
   multi_region: boolean;
   notes: string[];
 }
@@ -364,17 +356,10 @@ export function getSubscription() {
   return request<Subscription>('/v1/principals/me/subscription');
 }
 
-export function cancelSubscription() {
-  return request<Subscription>('/v1/principals/me/subscription/cancel', { method: 'POST' });
-}
-
 export interface Usage {
   plan_id: string;
-  tier: string;
   storage_used_bytes: number;
   storage_quota_bytes: number;
-  plan_base_storage_bytes: number;
-  extra_storage_bytes: number;
   storage_pct: number;
   vaults_used: number;
   vaults_quota: number;
@@ -386,27 +371,6 @@ export interface Usage {
 
 export function getUsage() {
   return request<Usage>('/v1/principals/me/usage');
-}
-
-export function buyStorageAddon(bundle: '1gb' | '5gb' | '10gb') {
-  return request<{ checkout_url: string; stub: boolean }>(
-    '/v1/principals/me/storage-addon',
-    { method: 'POST', body: JSON.stringify({ bundle }) }
-  );
-}
-
-export function openBillingPortal() {
-  return request<{ checkout_url: string; stub: boolean }>(
-    '/v1/principals/me/billing-portal',
-    { method: 'POST' }
-  );
-}
-
-export function reactivateSubscription() {
-  return request<Subscription>(
-    '/v1/principals/me/subscription/reactivate',
-    { method: 'POST' }
-  );
 }
 
 export function requestAccountDeletion() {

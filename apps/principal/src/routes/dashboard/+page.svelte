@@ -1,31 +1,12 @@
 <script lang="ts">
   import { base } from '$app/paths';
-  import { listVaults, getSubscription, heartbeat, listBuddies, getUsage, buyStorageAddon, getBankSignalStatus, enrolBankSignal, revokeBankSignal, ApiError, type Usage, type BankSignalStatus } from '$lib/api';
+  import { listVaults, getSubscription, heartbeat, listBuddies, getUsage, getBankSignalStatus, enrolBankSignal, revokeBankSignal, ApiError, type Usage, type BankSignalStatus } from '$lib/api';
   import { fmtDate, fmtRelative, fmtBytes } from '$lib/format';
   import type { Vault, Subscription, Buddy } from '$lib/types';
   import Card from '$lib/components/Card.svelte';
   import Button from '$lib/components/Button.svelte';
   import Banner from '$lib/components/Banner.svelte';
   import StatusBadge from '$lib/components/StatusBadge.svelte';
-
-  let purchasing = $state(false);
-  async function purchaseAddon(bundle: '1gb' | '5gb' | '10gb') {
-    purchasing = true;
-    try {
-      const r = await buyStorageAddon(bundle);
-      if (r.stub) {
-        alert(
-          `Stripe billing isn't configured yet. In production this would redirect to:\n${r.checkout_url}\n\nMeanwhile, the storage add-on can be granted manually by the operator.`
-        );
-      } else {
-        location.href = r.checkout_url;
-      }
-    } catch (e) {
-      error = e instanceof ApiError ? e.problem.detail || e.problem.title : String(e);
-    } finally {
-      purchasing = false;
-    }
-  }
 
   let vaults = $state<Vault[]>([]);
   let subscription = $state<Subscription | null>(null);
@@ -111,15 +92,13 @@
     if (!subscription) return '';
     switch (subscription.state) {
       case 'TRIALING':
-        return `Trial — ends ${fmtRelative(subscription.trial_end_at)}.`;
+        return `Trial period — ends ${fmtRelative(subscription.trial_end_at)}.`;
       case 'ACTIVE':
-        return `Active — renews ${fmtRelative(subscription.current_period_end)}.`;
+        return 'Active.';
       case 'PAST_DUE':
-        return 'Past due — update payment to keep your Vaults authorable.';
+        return 'Past due.';
       case 'CANCELED':
-        return `Cancelled. Vaults remain releasable until ${fmtDate(
-          subscription.retention_until
-        )}.`;
+        return `Cancelled. Vaults remain releasable until ${fmtDate(subscription.retention_until)}.`;
       case 'EXPIRED':
         return 'Expired. Data is scheduled for erasure.';
       case 'DELETED':
@@ -181,47 +160,30 @@
           <div class="row label">
             <span>Vaults</span>
             <span class="dim">
-              {usage.vaults_used} of {usage.vaults_quota}
+              {usage.vaults_used} of {usage.vaults_quota === 4294967295 ? '∞' : usage.vaults_quota}
             </span>
           </div>
           <div class="bar" aria-hidden="true">
             <div
               class="fill"
-              class:warn={usage.vaults_used / usage.vaults_quota >= 0.8}
-              class:full={usage.vaults_used >= usage.vaults_quota}
-              style="width: {Math.min((usage.vaults_used / usage.vaults_quota) * 100, 100)}%"
+              class:warn={usage.vaults_quota < 4294967295 && usage.vaults_used / usage.vaults_quota >= 0.8}
+              class:full={usage.vaults_quota < 4294967295 && usage.vaults_used >= usage.vaults_quota}
+              style="width: {usage.vaults_quota < 4294967295 ? Math.min((usage.vaults_used / usage.vaults_quota) * 100, 100) : 0}%"
             ></div>
           </div>
         </div>
       </div>
 
       <p class="meta">
-        Each Vault holds up to <strong>{usage.letters_quota_per_vault}</strong> Letter{usage.letters_quota_per_vault === 1 ? '' : 's'}.
+        Each Vault holds up to <strong>{usage.letters_quota_per_vault === 4294967295 ? '∞' : usage.letters_quota_per_vault}</strong> Letter{usage.letters_quota_per_vault === 1 ? '' : 's'}.
         Retention after cancel: <strong>{Math.round(usage.retention_days / 365)} year{usage.retention_days >= 730 ? 's' : ''}</strong>.
         Scheduled-release horizon: <strong>{Math.round(usage.scheduled_horizon_days / 365)} year{usage.scheduled_horizon_days >= 730 ? 's' : ''}</strong>.
-        {#if usage.extra_storage_bytes > 0}
-          <br />
-          Storage add-on: <strong>{fmtBytes(usage.extra_storage_bytes)}</strong> on top of the
-          plan base ({fmtBytes(usage.plan_base_storage_bytes)}).
-        {/if}
       </p>
 
       {#if usage.storage_pct >= 80}
         <Banner kind="warn">
           You're at {Math.round(usage.storage_pct)}% of your storage quota.
-          Consider <a href="{base}/account">upgrading your plan</a>, removing older Letters,
-          or buying a storage add-on:
-          <div class="addons">
-            <button type="button" disabled={purchasing} onclick={() => purchaseAddon('1gb')}>
-              +1 GB&nbsp;·&nbsp;$0.50/mo
-            </button>
-            <button type="button" disabled={purchasing} onclick={() => purchaseAddon('5gb')}>
-              +5 GB&nbsp;·&nbsp;$2.50/mo
-            </button>
-            <button type="button" disabled={purchasing} onclick={() => purchaseAddon('10gb')}>
-              +10 GB&nbsp;·&nbsp;$5.00/mo
-            </button>
-          </div>
+          Remove older Letters or increase <code>MAX_UPLOAD_BYTES</code> in your deployment configuration.
         </Banner>
       {/if}
     </Card>
@@ -375,20 +337,6 @@
   }
   .meter .fill.warn { background: #b8860b; }
   .meter .fill.full { background: var(--burgundy); }
-  .addons { display: flex; gap: var(--sp-2); flex-wrap: wrap; margin-top: var(--sp-2); }
-  .addons button {
-    background: transparent;
-    border: 1px solid var(--ink);
-    padding: 6px 12px;
-    font-family: inherit;
-    font-size: var(--size-body-2);
-    cursor: pointer;
-  }
-  .addons button:hover:not(:disabled) {
-    background: var(--ink);
-    color: var(--parchment);
-  }
-  .addons button:disabled { opacity: 0.6; cursor: progress; }
 
   .pill.enc {
     display: inline-block;

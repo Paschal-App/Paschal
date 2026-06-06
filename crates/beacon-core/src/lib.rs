@@ -213,13 +213,6 @@ impl PlanId {
         Ok(Self::SelfHosted)
     }
 
-    /// Public-facing tier name.
-    pub fn tier_name(self) -> &'static str {
-        match self {
-            Self::SelfHosted => "Self-Hosted",
-        }
-    }
-
     pub fn features(self) -> PlanFeatures {
         plan_features(self)
     }
@@ -229,7 +222,7 @@ impl PlanId {
 // Plan feature registry (market-scan-and-pricing.md)
 // ----------------------------------------------------------------------------
 
-/// Static description of what a Plan permits and prices.
+/// Static description of what a Plan permits.
 ///
 /// Two units that matter:
 ///   * `storage_bytes` — total ciphertext bytes (attachments) that may live
@@ -240,37 +233,19 @@ impl PlanId {
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct PlanFeatures {
     pub plan_id: PlanId,
-    pub tier: &'static str,
-    pub price_usd_minor: u32, // cents per cadence; 0 for Draft
-    pub cadence: PlanCadence,
-    pub display_price: &'static str,
     pub storage_bytes: u64,
     pub retention_days: i64,
     pub scheduled_horizon_days: i64,
     pub max_vaults: u32,
     pub max_letters_per_vault: u32,
     pub max_trustees: u32,
-    /// Read-only family deputies. Estate gets 1 slot; Estate+ gets 3; Legacy
-    /// gets 5; Draft gets 0.
     pub max_co_stewards: u32,
     pub allowed_signals: &'static [SignalSource],
-    pub sms_recipients_allowed: bool,
-    pub priority_support: bool,
-    pub concierge_dunning: bool,
-    pub published_audit: bool,
     /// Whether the principal may place a Vault in a non-default storage region
-    /// and move it between regions. Estate+ and Legacy only.
+    /// and move it between regions.
     pub multi_region: bool,
-    /// Notes shown to the principal at selection time.
+    /// Notes shown to the principal.
     pub notes: &'static [&'static str],
-}
-
-#[derive(Copy, Clone, Debug, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum PlanCadence {
-    Free,
-    Monthly,
-    Annual,
 }
 
 const ALL_SIGNALS: &[SignalSource] = &[
@@ -299,10 +274,6 @@ pub fn plan_features(plan: PlanId) -> PlanFeatures {
     match plan {
         PlanId::SelfHosted => PlanFeatures {
             plan_id: plan,
-            tier: "Self-Hosted",
-            price_usd_minor: 0,
-            cadence: PlanCadence::Free,
-            display_price: "Self-hosted",
             storage_bytes: 1024 * TB,
             retention_days: 36_500,
             scheduled_horizon_days: 36_500,
@@ -311,10 +282,6 @@ pub fn plan_features(plan: PlanId) -> PlanFeatures {
             max_trustees: u32::MAX,
             max_co_stewards: u32::MAX,
             allowed_signals: ALL_SIGNALS,
-            sms_recipients_allowed: true,
-            priority_support: false,
-            concierge_dunning: false,
-            published_audit: false,
             multi_region: true,
             notes: &["Self-hosted edition — all features, no quotas."],
         },

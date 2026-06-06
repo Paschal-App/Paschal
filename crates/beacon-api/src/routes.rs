@@ -13,7 +13,7 @@ use axum::{
 };
 use beacon_core::{
     can_transition, plan_features, public_catalog, AttachmentId, BuddyId, BuddyResponse,
-    CoStewardId, LetterId, PlanFeatures, PlanId, PrincipalId, ReleaseReason, Tier, VaultId,
+    CoStewardId, LetterId, PlanId, PrincipalId, ReleaseReason, Tier, VaultId,
     VaultState,
 };
 use beacon_db as db;
@@ -222,10 +222,6 @@ fn parse_plan_param(_s: Option<&str>) -> ApiResult<PlanId> {
 #[derive(Serialize)]
 pub struct PlanView {
     pub plan_id: String,
-    pub tier: String,
-    pub cadence: String,
-    pub display_price: String,
-    pub price_usd_minor: u32,
     pub storage_bytes: u64,
     pub retention_days: i64,
     pub scheduled_horizon_days: i64,
@@ -233,26 +229,13 @@ pub struct PlanView {
     pub max_letters_per_vault: u32,
     pub max_trustees: u32,
     pub allowed_signals: Vec<String>,
-    pub sms_recipients_allowed: bool,
-    pub priority_support: bool,
-    pub concierge_dunning: bool,
-    pub published_audit: bool,
     pub multi_region: bool,
     pub notes: Vec<String>,
 }
 
-fn plan_view(f: PlanFeatures) -> PlanView {
-    let cadence = match f.cadence {
-        beacon_core::PlanCadence::Free => "free",
-        beacon_core::PlanCadence::Monthly => "monthly",
-        beacon_core::PlanCadence::Annual => "annual",
-    };
+fn plan_view(f: beacon_core::PlanFeatures) -> PlanView {
     PlanView {
         plan_id: f.plan_id.as_db_str().to_string(),
-        tier: f.tier.to_string(),
-        cadence: cadence.to_string(),
-        display_price: f.display_price.to_string(),
-        price_usd_minor: f.price_usd_minor,
         storage_bytes: f.storage_bytes,
         retention_days: f.retention_days,
         scheduled_horizon_days: f.scheduled_horizon_days,
@@ -260,10 +243,6 @@ fn plan_view(f: PlanFeatures) -> PlanView {
         max_letters_per_vault: f.max_letters_per_vault,
         max_trustees: f.max_trustees,
         allowed_signals: f.allowed_signals.iter().map(|s| s.as_db_str().to_string()).collect(),
-        sms_recipients_allowed: f.sms_recipients_allowed,
-        priority_support: f.priority_support,
-        concierge_dunning: f.concierge_dunning,
-        published_audit: f.published_audit,
         multi_region: f.multi_region,
         notes: f.notes.iter().map(|s| (*s).to_string()).collect(),
     }
@@ -293,13 +272,8 @@ pub async fn get_subscription(
 #[derive(Serialize)]
 pub struct UsageView {
     pub plan_id: String,
-    pub tier: String,
     pub storage_used_bytes: i64,
     pub storage_quota_bytes: u64,
-    /// Plan-base storage (without add-ons). Useful for "upgrade" copy.
-    pub plan_base_storage_bytes: u64,
-    /// Bytes granted from storage add-on purchases (unused in self-hosted).
-    pub extra_storage_bytes: i64,
     pub storage_pct: f32,
     pub vaults_used: i64,
     pub vaults_quota: u32,
@@ -329,11 +303,8 @@ pub async fn get_usage(
 
     Ok(Json(UsageView {
         plan_id: sub.plan_id.as_db_str().to_string(),
-        tier: plan.tier.to_string(),
         storage_used_bytes: storage_used,
         storage_quota_bytes: effective,
-        plan_base_storage_bytes: plan.storage_bytes,
-        extra_storage_bytes: sub.extra_storage_bytes,
         storage_pct,
         vaults_used: vault_count,
         vaults_quota: plan.max_vaults,
@@ -375,9 +346,8 @@ fn resolve_storage_region(
     };
     if region != beacon_core::StorageRegion::default() && !plan.multi_region {
         return Err(ApiError::Forbidden(format!(
-            "Storing a Vault in {} requires an Estate+ or Legacy plan. Your {} plan stores in {}.",
+            "Storing a Vault in {} requires multi-region storage, which is not enabled on this deployment (default region: {}).",
             region.display_name(),
-            plan.tier,
             beacon_core::StorageRegion::default().display_name(),
         )));
     }
@@ -413,8 +383,8 @@ pub async fn create_vault(
     let current_vaults = db::vault_count(&state.pool, pid).await? as u32;
     if current_vaults >= plan.max_vaults {
         return Err(ApiError::Forbidden(format!(
-            "Your {} plan allows {} Vaults (currently {}). Upgrade to add more.",
-            plan.tier, plan.max_vaults, current_vaults
+            "Vault limit reached ({} of {} allowed). Adjust MAX_VAULTS in your deployment configuration to increase it.",
+            current_vaults, plan.max_vaults
         )));
     }
 
@@ -505,11 +475,9 @@ pub async fn move_vault_region(
     let sub = db::fetch_subscription(&state.pool, pid).await?;
     let plan = plan_features(sub.plan_id);
     if !plan.multi_region {
-        return Err(ApiError::Forbidden(format!(
-            "Moving a Vault's storage region requires an Estate+ or Legacy plan. Your {} plan stores in {}.",
-            plan.tier,
-            beacon_core::StorageRegion::default().display_name(),
-        )));
+        return Err(ApiError::Forbidden(
+            "Moving a Vault's storage region is not enabled for this deployment.".into(),
+        ));
     }
 
     let target = beacon_core::StorageRegion::from_aws_str(&body.storage_region)
@@ -678,8 +646,8 @@ pub async fn seal_letter(
     let current_letters = db::letter_count(&state.pool, vault.id).await? as u32;
     if current_letters >= plan.max_letters_per_vault {
         return Err(ApiError::Forbidden(format!(
-            "Your {} plan allows {} Letters per Vault (currently {}). Upgrade to add more.",
-            plan.tier, plan.max_letters_per_vault, current_letters
+            "Letter limit reached ({} of {} allowed). Adjust MAX_LETTERS_PER_VAULT in your deployment configuration.",
+            current_letters, plan.max_letters_per_vault
         )));
     }
 
@@ -692,9 +660,9 @@ pub async fn seal_letter(
         let horizon = Utc::now() + chrono::Duration::days(plan.scheduled_horizon_days);
         if t > horizon {
             return Err(ApiError::BadRequest(format!(
-                "Your {} plan allows scheduled releases up to {} days in the future. \
-                 Upgrade to extend the horizon.",
-                plan.tier, plan.scheduled_horizon_days
+                "Scheduled release is {} days in the future, which exceeds the {} day horizon for this deployment.",
+                (t - Utc::now()).num_days(),
+                plan.scheduled_horizon_days
             )));
         }
     }
@@ -1513,8 +1481,8 @@ pub async fn seal_letter_multipart(
     let current_letters = db::letter_count(&state.pool, vault.id).await? as u32;
     if current_letters >= plan.max_letters_per_vault {
         return Err(ApiError::Forbidden(format!(
-            "Your {} plan allows {} Letters per Vault (currently {}).",
-            plan.tier, plan.max_letters_per_vault, current_letters
+            "Letter limit reached ({} of {} allowed). Adjust MAX_LETTERS_PER_VAULT in your deployment configuration.",
+            current_letters, plan.max_letters_per_vault
         )));
     }
     let upload_total: u64 = files.iter().map(|(_, _, b)| b.len() as u64).sum();
@@ -1522,18 +1490,15 @@ pub async fn seal_letter_multipart(
     let effective_quota = sub.effective_storage_bytes();
     if current_storage + upload_total > effective_quota {
         return Err(ApiError::Forbidden(format!(
-            "Your {} plan permits {} bytes of attachment storage \
-             (including any add-on grants). You're using {} and this upload \
-             would add {}. Upgrade your plan or purchase a storage add-on \
-             to extend.",
-            plan.tier, effective_quota, current_storage, upload_total
+            "Storage quota exceeded: {} bytes used of {} allowed; this upload would add {} bytes.",
+            current_storage, effective_quota, upload_total
         )));
     }
 
     validate_letter_kind(kind.as_deref())?;
     validate_release_mode(release_mode.as_deref(), scheduled_release_at.as_ref())?;
 
-    // Enforce the plan's scheduled-release horizon on multipart sealing too.
+    // Enforce the scheduled-release horizon on multipart sealing too.
     if let Some(t) = scheduled_release_at {
         if t < Utc::now() {
             return Err(ApiError::BadRequest(
@@ -1543,8 +1508,9 @@ pub async fn seal_letter_multipart(
         let horizon = Utc::now() + chrono::Duration::days(plan.scheduled_horizon_days);
         if t > horizon {
             return Err(ApiError::BadRequest(format!(
-                "Your {} plan allows scheduled releases up to {} days in the future.",
-                plan.tier, plan.scheduled_horizon_days
+                "Scheduled release is {} days in the future, which exceeds the {} day horizon for this deployment.",
+                (t - Utc::now()).num_days(),
+                plan.scheduled_horizon_days
             )));
         }
     }
@@ -2061,19 +2027,15 @@ pub async fn invite_co_steward(
     let sub = db::fetch_subscription(&state.pool, pid).await?;
     let plan = plan_features(sub.plan_id);
     if plan.max_co_stewards == 0 {
-        return Err(ApiError::Forbidden(format!(
-            "Your {} plan does not include Co-Stewards. Upgrade to Estate or higher.",
-            plan.tier
-        )));
+        return Err(ApiError::Forbidden(
+            "Co-Stewards are not enabled on this deployment.".into(),
+        ));
     }
     let current = db::co_steward_count(&state.pool, pid).await? as u32;
     if current >= plan.max_co_stewards {
         return Err(ApiError::Forbidden(format!(
-            "Your {} plan allows {} Co-Steward{} (currently {}). Upgrade to add more.",
-            plan.tier,
-            plan.max_co_stewards,
-            if plan.max_co_stewards == 1 { "" } else { "s" },
-            current
+            "Co-Steward limit reached ({} of {} allowed). Adjust MAX_CO_STEWARDS in your deployment configuration.",
+            current, plan.max_co_stewards
         )));
     }
 

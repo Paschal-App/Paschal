@@ -2,11 +2,8 @@
   import { goto } from '$app/navigation';
   import {
     getSubscription,
-    cancelSubscription,
-    reactivateSubscription,
     requestAccountDeletion,
     cancelAccountDeletion,
-    openBillingPortal,
     ApiError
   } from '$lib/api';
   import type { Subscription } from '$lib/types';
@@ -33,37 +30,9 @@
     }
   }
 
-  async function cancel() {
-    if (!confirm(
-      'Cancel your Subscription? Your Vaults remain releasable for 3 years; you can reactivate any time during that window. (This is different from deleting your account.)'
-    )) return;
-    action = 'cancel';
-    error = null;
-    try {
-      subscription = await cancelSubscription();
-      notice = 'Subscription cancelled. Vaults remain in retention.';
-    } catch (e) {
-      error = e instanceof ApiError ? e.problem.detail || e.problem.title : String(e);
-    } finally {
-      action = null;
-    }
-  }
-
-  async function reactivate() {
-    action = 'reactivate';
-    try {
-      subscription = await reactivateSubscription();
-      notice = 'Subscription reactivated. Authoring is permitted again.';
-    } catch (e) {
-      error = e instanceof ApiError ? e.problem.detail || e.problem.title : String(e);
-    } finally {
-      action = null;
-    }
-  }
-
   async function requestDelete() {
     if (!confirm(
-      'Delete your account? This is permanent after 30 days. Every Vault, Letter, and Attachment will be cryptographically erased. To just stop paying without losing the Vaults, use Cancel Subscription instead.'
+      'Delete your account? This is permanent after 30 days. Every Vault, Letter, and Attachment will be cryptographically erased.'
     )) return;
     action = 'delete';
     try {
@@ -81,20 +50,6 @@
     try {
       await cancelAccountDeletion();
       notice = 'Deletion cancelled. Your account is safe.';
-    } catch (e) {
-      error = e instanceof ApiError ? e.problem.detail || e.problem.title : String(e);
-    } finally {
-      action = null;
-    }
-  }
-
-  async function manageSubscription() {
-    action = 'portal';
-    error = null;
-    try {
-      const r = await openBillingPortal();
-      if (r.stub) { notice = 'Billing portal not configured in this environment.'; return; }
-      location.href = r.checkout_url;
     } catch (e) {
       error = e instanceof ApiError ? e.problem.detail || e.problem.title : String(e);
     } finally {
@@ -123,10 +78,10 @@
       <p>No Subscription found.</p>
     {:else}
       <dl>
-        <dt>State</dt>
-        <dd><strong>{subscription.state}</strong></dd>
         <dt>Plan</dt>
-        <dd>{subscription.plan_id}</dd>
+        <dd><strong>{subscription.plan_id}</strong></dd>
+        <dt>State</dt>
+        <dd>{subscription.state}</dd>
         <dt>Started</dt>
         <dd>{fmtDate(subscription.started_at)}</dd>
         {#if subscription.trial_end_at}
@@ -140,25 +95,9 @@
           <dd>{fmtDate(subscription.retention_until)}</dd>
         {/if}
       </dl>
-
-      <div class="row" style="margin-top: var(--sp-3)">
-        {#if subscription.state === 'CANCELED'}
-          <Button onclick={reactivate} disabled={action !== null}>
-            {action === 'reactivate' ? 'Reactivating…' : 'Reactivate'}
-          </Button>
-        {:else if ['TRIALING', 'ACTIVE', 'PAST_DUE'].includes(subscription.state)}
-          <Button variant="secondary" onclick={cancel} disabled={action !== null}>
-            {action === 'cancel' ? 'Cancelling…' : 'Cancel Subscription'}
-          </Button>
-        {/if}
-        <button type="button" class="text-link" onclick={manageSubscription} disabled={action !== null}>
-          {action === 'portal' ? 'Opening…' : 'Manage / upgrade plan →'}
-        </button>
-      </div>
       <p class="dim small" style="margin-top: var(--sp-2)">
-        Cancelling enters a 3-year retention window. Your Vaults remain
-        releasable on signal triggers; new authoring is blocked. Different
-        from <em>deleting your account</em>, below.
+        This is a self-hosted instance. Subscription state tracks data
+        retention; all features are available regardless of state.
       </p>
     {/if}
   </Card>
