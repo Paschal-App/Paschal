@@ -1,3 +1,5 @@
+[![CD](https://github.com/Paschal-App/Paschal/actions/workflows/cd.yml/badge.svg)](https://github.com/Paschal-App/Paschal/actions/workflows/cd.yml)
+[![Dependabot Updates](https://github.com/Paschal-App/Paschal/actions/workflows/dependabot/dependabot-updates/badge.svg)](https://github.com/Paschal-App/Paschal/actions/workflows/dependabot/dependabot-updates)
 # Paschal
 
 > **Paschal** (PASS-kəl) — named for the great candle kept burning through a vigil. A digital letter of last resort.
@@ -19,7 +21,7 @@ container that holds the API and the web app together.
 
 ## Managed hosting
 
-If you would rather not run your own server, **[pascal.app](https://pascal.app)**
+If you would rather not run your own server, **[paschal.app](https://paschal.app)**
 offers a fully managed, hosted version of Paschal — backups, upgrades, and
 monitoring included. The self-hosted and managed editions share the same
 open-source core.
