@@ -55,3 +55,6 @@ hmac.workspace = true
 subtle.workspace = true
 include_dir.workspace = true
 reqwest.workspace = true
+lettre.workspace = true
+webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation", "resident-key-support"] }
+url = "2"

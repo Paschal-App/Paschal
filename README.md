@@ -47,6 +47,18 @@ open-source core.
   attestations, and more to keep vaults alive.
 - **Drills.** Run a rehearsal release any time to verify the full flow without
   committing — vaults return to ACTIVE after a drill.
+- **Passkeys.** Passwordless sign-in with WebAuthn passkeys, alongside the email
+  flow.
+- **Private (zero-knowledge) letters.** Encrypt a letter in your browser under a
+  key derived from your passkey — the instance only ever stores ciphertext and
+  cannot read it. Recipients open it with a passphrase, a split access code, or
+  an operator-held key, depending on the heir mode you choose.
+- **Recovery key.** A one-time recovery code that restores access to your
+  private vaults if you lose your passkey.
+- **Duress signal.** A covert panic webhook you can trigger under coercion — it
+  freezes every vault's release and quietly alerts a trusted contact.
+- **Transparency log.** A public, tamper-evident record of significant events,
+  plus a warrant canary.
 
 ## How it is built
 
@@ -55,7 +67,8 @@ open-source core.
 | Backend | Rust · Axum · SQLx · Tokio |
 | Database | PostgreSQL 16 |
 | Frontend | SvelteKit 2 · Svelte 5 · TypeScript (compiled into the binary) |
-| Encryption | AES-256-GCM, local file-backed key |
+| Auth | Email + WebAuthn passkeys (`webauthn-rs`) |
+| Encryption | AES-256-GCM at rest (local file-backed key); browser-side AES-GCM for private zero-knowledge letters |
 
 The SvelteKit app is compiled into the Rust binary at build time, so the running
 container serves both the API and the UI from one process. Database migrations
@@ -99,6 +112,10 @@ to change:
 |---|---|---|
 | `POSTGRES_PASSWORD` | — (required) | Database password |
 | `BEACON_PUBLIC_BASE_URL` | `http://localhost:8080` | External URL used in recipient links — set this to your real domain |
+| `WEBAUTHN_RP_ID` | `localhost` | Passkey domain (no scheme/port) — **must** be your real registrable domain in production, or passkeys fail |
+| `WEBAUTHN_RP_ORIGIN` | `http://localhost:8080` | Full origin(s) the app is served from, comma-separated — must match the browser URL (passkeys require localhost or HTTPS) |
+| `NOTIFICATIONS_BACKEND` | `stub` | Email delivery: `stub` (logs only — **no email is sent**), `resend`, or `smtp`. See the Email section of [`.env.example`](.env.example) |
+| `EMAIL_FROM` | `Paschal <noreply@localhost>` | Envelope From for outbound mail (used by `resend` and `smtp`) |
 | `COOLING_OFF_SECONDS` | `1209600` (14 days) | Grace period before release |
 | `HEARTBEAT_MAX_GAP_SECONDS` | `604800` (7 days) | Allowed gap between check-ins |
 | `RETENTION_DAYS` | `1095` (3 years) | Data retention after subscription cancellation |

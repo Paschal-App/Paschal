@@ -1,7 +1,15 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
   import { base } from '$app/paths';
-  import { signup, listPlans, ApiError, type PublicPlan } from '$lib/api';
+  import {
+    signup,
+    listPlans,
+    getPasskeyAuthOptions,
+    verifyPasskeyAuthentication,
+    ApiError,
+    type PublicPlan
+  } from '$lib/api';
+  import { startPasskeyAuthentication } from '$lib/webauthn';
   import { save } from '$lib/session';
   import { fmtBytes } from '$lib/format';
   import Card from '$lib/components/Card.svelte';
@@ -14,6 +22,7 @@
   let selected = $state<string>('estate_monthly_v2');
   let tosAccepted = $state(false);
   let submitting = $state(false);
+  let passkeySubmitting = $state(false);
   let error = $state<string | null>(null);
 
   $effect(() => {
@@ -52,6 +61,27 @@
       error = e instanceof ApiError ? e.problem.detail || e.problem.title : String(e);
     } finally {
       submitting = false;
+    }
+  }
+
+  async function signInWithPasskey() {
+    if (!email) { error = 'Enter your email first, then use your passkey.'; return; }
+    passkeySubmitting = true;
+    error = null;
+    try {
+      const { challenge_id, options } = await getPasskeyAuthOptions(email);
+      const assertion = await startPasskeyAuthentication(options);
+      const r = await verifyPasskeyAuthentication({ challenge_id, assertion });
+      save({ token: r.session_token, email, principalId: r.principal_id });
+      goto(`${base}/dashboard`);
+    } catch (err) {
+      if (err instanceof ApiError && err.problem.status === 404) {
+        error = 'No passkey registered for this account. Sign in with email instead.';
+      } else {
+        error = err instanceof ApiError ? err.problem.detail || err.problem.title : String(err);
+      }
+    } finally {
+      passkeySubmitting = false;
     }
   }
 
@@ -297,6 +327,13 @@
         <a class="text-link" href="{base}/">Back</a>
       </div>
     </form>
+
+    <div class="passkey-signin">
+      <p class="dim small">Already registered a passkey on this account?</p>
+      <Button variant="secondary" onclick={signInWithPasskey} disabled={passkeySubmitting || !email}>
+        {passkeySubmitting ? 'Waiting for passkey…' : 'Sign in with a passkey'}
+      </Button>
+    </div>
   </Card>
 </div>
 
@@ -387,6 +424,8 @@
   .tos-row input { margin-top: 3px; flex-shrink: 0; }
   .tos-row a { color: var(--ink); }
   .row { display: flex; gap: var(--sp-3); align-items: center; margin-top: var(--sp-2); }
+  .passkey-signin { margin-top: var(--sp-3); border-top: var(--rule); padding-top: var(--sp-3); }
+  .passkey-signin .small { margin-bottom: var(--sp-2); }
   .text-link { color: var(--slate); text-decoration: underline; text-underline-offset: 4px; }
   .text-link:hover { color: var(--ink); }
   .small { font-size: var(--size-caption); }
