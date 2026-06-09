@@ -17,7 +17,7 @@ use tower_http::{
     trace::TraceLayer,
 };
 
-use crate::{rate_limit::RateLimiter, routes, security_headers, state::AppState};
+use crate::{passkey, rate_limit::RateLimiter, routes, security_headers, state::AppState};
 
 const REQUEST_ID_HEADER: &str = "x-request-id";
 
@@ -31,10 +31,44 @@ pub fn build_router(state: AppState) -> Router {
         .route("/livez", get(livez))
         .route("/readyz", get(readyz))
         .route("/metrics", get(metrics_endpoint))
-        // Auth
+        // Auth — email + passwordless passkeys
         .route("/v1/auth/signup", post(routes::signup))
+        .route("/v1/auth/signin", post(routes::signin))
+        .route(
+            "/v1/auth/passkey/register/options",
+            post(passkey::passkey_register_options),
+        )
+        .route(
+            "/v1/auth/passkey/register/verify",
+            post(passkey::passkey_register_verify),
+        )
+        .route(
+            "/v1/auth/passkey/authenticate/options",
+            post(passkey::passkey_authenticate_options),
+        )
+        .route(
+            "/v1/auth/passkey/authenticate/verify",
+            post(passkey::passkey_authenticate_verify),
+        )
+        .route(
+            "/v1/auth/passkey/recovery/validate",
+            post(passkey::passkey_recovery_validate),
+        )
+        .route(
+            "/v1/auth/passkey/recovery/redeem",
+            post(passkey::recovery_redeem),
+        )
         // Public plan catalog
         .route("/v1/plans", get(routes::list_plans))
+        // Public trust endpoints (no auth)
+        .route(
+            "/v1/public/warrant-canary",
+            get(routes::get_warrant_canary),
+        )
+        .route(
+            "/v1/public/transparency-log",
+            get(routes::list_transparency_log),
+        )
         // Vaults
         .route(
             "/v1/vaults",
@@ -53,6 +87,21 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/v1/vaults/:vault_id/letters/:letter_id/export",
             post(routes::export_letter),
+        )
+        // Private (Zero-Knowledge) letters: browser-encrypted seal + read-back.
+        .route("/v1/vaults/:id/letters/zk", post(routes::seal_zk_letter))
+        .route(
+            "/v1/vaults/:vault_id/letters/:letter_id/ciphertext",
+            get(routes::get_zk_letter_ciphertext),
+        )
+        // ZK key envelopes (passkey-PRF-wrapped vault DEK) + per-vault PRK envelope
+        .route(
+            "/v1/vaults/:id/zk-envelope",
+            get(passkey::get_zk_envelopes).post(passkey::store_zk_envelope),
+        )
+        .route(
+            "/v1/vaults/:id/prk-envelope",
+            get(passkey::get_vault_prk_envelope).post(passkey::store_vault_prk_envelope),
         )
         .route("/v1/vaults/:id/force-release", post(routes::force_release))
         .route("/v1/vaults/:id/cancel", post(routes::cancel_release))
@@ -125,6 +174,16 @@ pub fn build_router(state: AppState) -> Router {
             get(routes::get_subscription),
         )
         .route("/v1/principals/me/usage", get(routes::get_usage))
+        // Passkeys (manage registered devices) + per-principal Recovery Key
+        .route("/v1/principals/me/passkeys", get(passkey::list_passkeys))
+        .route(
+            "/v1/principals/me/passkeys/:id",
+            axum::routing::delete(passkey::delete_passkey),
+        )
+        .route(
+            "/v1/principals/me/recovery-key",
+            get(passkey::get_recovery_key).post(passkey::store_recovery_key),
+        )
         // Account deletion
         .route(
             "/v1/principals/me",
@@ -159,6 +218,17 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/v1/signals/bank-dormancy/:webhook_id",
             post(routes::bank_dormancy_webhook),
+        )
+        // Duress signal (covert panic webhook + arm/disarm)
+        .route(
+            "/v1/principals/me/duress",
+            get(routes::get_duress)
+                .post(routes::arm_duress)
+                .delete(routes::revoke_duress),
+        )
+        .route(
+            "/v1/signals/duress/:webhook_id",
+            post(routes::duress_webhook),
         )
         // Heir UI page (recipient claim)
         .route("/claim", get(heir_page))

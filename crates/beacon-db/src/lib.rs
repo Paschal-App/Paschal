@@ -1495,6 +1495,34 @@ pub async fn append_transparency_entry(
     Ok(())
 }
 
+pub struct TransparencyEntry {
+    pub id: Uuid,
+    pub kind: String,
+    pub ts: DateTime<Utc>,
+    pub payload_json: serde_json::Value,
+}
+
+pub async fn list_transparency_entries(
+    pool: &PgPool,
+    limit: i64,
+) -> Result<Vec<TransparencyEntry>, DbError> {
+    let rows = sqlx::query(
+        "SELECT id, kind, ts, payload_json FROM transparency_entry ORDER BY ts DESC LIMIT $1",
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| TransparencyEntry {
+            id: r.get("id"),
+            kind: r.get("kind"),
+            ts: r.get("ts"),
+            payload_json: r.get("payload_json"),
+        })
+        .collect())
+}
+
 // ----------------------------------------------------------------------------
 // Subscription extras (reactivation, retention sweep)
 // ----------------------------------------------------------------------------
@@ -2344,6 +2372,116 @@ pub async fn delete_bank_dormancy_sub(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Duress signal — covert, user-armed panic webhook (migration 0022).
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct DuressSignalRow {
+    pub principal_id: PrincipalId,
+    pub webhook_id: Uuid,
+    pub alert_email: Option<String>,
+    pub armed_at: DateTime<Utc>,
+    pub triggered_at: Option<DateTime<Utc>>,
+}
+
+fn row_to_duress(row: &PgRow) -> DuressSignalRow {
+    DuressSignalRow {
+        principal_id: PrincipalId(row.get("principal_id")),
+        webhook_id: row.get("webhook_id"),
+        alert_email: row.try_get("alert_email").ok().flatten(),
+        armed_at: row.get("armed_at"),
+        triggered_at: row.try_get("triggered_at").ok().flatten(),
+    }
+}
+
+/// Arm (or re-arm) the duress signal. Re-arming rotates the webhook and clears
+/// any prior trigger.
+pub async fn arm_duress(
+    pool: &PgPool,
+    principal_id: PrincipalId,
+    webhook_id: Uuid,
+    alert_email: Option<&str>,
+) -> Result<DuressSignalRow, DbError> {
+    let row = sqlx::query(
+        "INSERT INTO duress_signal (principal_id, webhook_id, alert_email)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (principal_id) DO UPDATE
+            SET webhook_id = EXCLUDED.webhook_id,
+                alert_email = EXCLUDED.alert_email,
+                armed_at = now(),
+                triggered_at = NULL,
+                last_alert_at = NULL
+         RETURNING principal_id, webhook_id, alert_email, armed_at, triggered_at",
+    )
+    .bind(principal_id.as_uuid())
+    .bind(webhook_id)
+    .bind(alert_email)
+    .fetch_one(pool)
+    .await?;
+    Ok(row_to_duress(&row))
+}
+
+pub async fn fetch_duress(
+    pool: &PgPool,
+    principal_id: PrincipalId,
+) -> Result<Option<DuressSignalRow>, DbError> {
+    let row = sqlx::query(
+        "SELECT principal_id, webhook_id, alert_email, armed_at, triggered_at
+           FROM duress_signal WHERE principal_id = $1",
+    )
+    .bind(principal_id.as_uuid())
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.as_ref().map(row_to_duress))
+}
+
+pub async fn delete_duress(pool: &PgPool, principal_id: PrincipalId) -> Result<(), DbError> {
+    sqlx::query("DELETE FROM duress_signal WHERE principal_id = $1")
+        .bind(principal_id.as_uuid())
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Fire the duress signal by its opaque webhook id. Idempotently sets
+/// triggered_at (keeps the first trigger time) and records the alert time.
+/// Returns the row (for the silent contact alert) when the webhook is valid.
+pub async fn trigger_duress(
+    pool: &PgPool,
+    webhook_id: Uuid,
+    now: DateTime<Utc>,
+) -> Result<Option<DuressSignalRow>, DbError> {
+    let row = sqlx::query(
+        "UPDATE duress_signal
+            SET triggered_at = COALESCE(triggered_at, $1),
+                last_alert_at = $1
+          WHERE webhook_id = $2
+        RETURNING principal_id, webhook_id, alert_email, armed_at, triggered_at",
+    )
+    .bind(now)
+    .bind(webhook_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.as_ref().map(row_to_duress))
+}
+
+/// True while the principal has a fired duress signal — the dead-man's switch is
+/// frozen until they disarm.
+pub async fn principal_in_duress(
+    pool: &PgPool,
+    principal_id: PrincipalId,
+) -> Result<bool, DbError> {
+    let hit: Option<bool> = sqlx::query_scalar(
+        "SELECT true FROM duress_signal
+          WHERE principal_id = $1 AND triggered_at IS NOT NULL",
+    )
+    .bind(principal_id.as_uuid())
+    .fetch_optional(pool)
+    .await?;
+    Ok(hit.unwrap_or(false))
+}
+
 pub async fn list_bank_dormancy_subs_with_recent_ping(
     pool: &PgPool,
     principal_id: PrincipalId,
@@ -2562,5 +2700,632 @@ pub async fn consume_attachment_claim(
             r.get("recipient_email"),
             r.get("is_drill"),
         )
+    }))
+}
+
+// ----------------------------------------------------------------------------
+// Principal lookup by email (passkey sign-in + recovery)
+// ----------------------------------------------------------------------------
+
+pub async fn fetch_principal_by_email(
+    pool: &PgPool,
+    email: &str,
+) -> Result<Option<Principal>, DbError> {
+    let row = sqlx::query(
+        "SELECT id, display_name, primary_email, created_at FROM principal WHERE primary_email = $1",
+    )
+    .bind(email)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| row_to_principal(&r)))
+}
+
+
+// WebAuthn — challenges
+// ----------------------------------------------------------------------------
+
+pub async fn create_webauthn_challenge(
+    pool: &PgPool,
+    principal_id: Option<Uuid>,
+    state_json: &str,
+    ceremony: &str,
+) -> Result<Uuid, DbError> {
+    let row = sqlx::query(
+        "INSERT INTO webauthn_challenge (principal_id, state_json, ceremony)
+         VALUES ($1, $2, $3)
+         RETURNING id",
+    )
+    .bind(principal_id)
+    .bind(state_json)
+    .bind(ceremony)
+    .fetch_one(pool)
+    .await?;
+    Ok(row.get("id"))
+}
+
+/// Atomically consume a challenge (fetch + delete). Returns None if expired or absent.
+/// Returns `(state_json, principal_id)`.
+pub async fn consume_webauthn_challenge(
+    pool: &PgPool,
+    challenge_id: Uuid,
+    ceremony: &str,
+) -> Result<Option<(String, Option<Uuid>)>, DbError> {
+    let row = sqlx::query(
+        "DELETE FROM webauthn_challenge
+          WHERE id = $1
+            AND ceremony = $2
+            AND expires_at > now()
+         RETURNING state_json, principal_id",
+    )
+    .bind(challenge_id)
+    .bind(ceremony)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| {
+        let state_json: String = r.get("state_json");
+        let principal_id: Option<Uuid> = r.try_get("principal_id").ok().flatten();
+        (state_json, principal_id)
+    }))
+}
+
+pub async fn expire_webauthn_challenges(pool: &PgPool) -> Result<u64, DbError> {
+    let result = sqlx::query("DELETE FROM webauthn_challenge WHERE expires_at <= now()")
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected())
+}
+
+// ----------------------------------------------------------------------------
+// WebAuthn — passkeys
+// ----------------------------------------------------------------------------
+
+pub struct PasskeyRow {
+    pub id: Uuid,
+    pub principal_id: Uuid,
+    pub credential_id: Vec<u8>,
+    pub passkey_json: String,
+    pub backed_up: bool,
+    pub transports: Vec<String>,
+    pub name: String,
+    pub created_at: DateTime<Utc>,
+    pub last_used_at: Option<DateTime<Utc>>,
+}
+
+fn row_to_passkey(row: &PgRow) -> PasskeyRow {
+    PasskeyRow {
+        id: row.get("id"),
+        principal_id: row.get("principal_id"),
+        credential_id: row.get("credential_id"),
+        passkey_json: row.get("passkey_json"),
+        backed_up: row.get("backed_up"),
+        transports: row.get("transports"),
+        name: row.get("name"),
+        created_at: row.get("created_at"),
+        last_used_at: row.try_get("last_used_at").ok().flatten(),
+    }
+}
+
+pub async fn store_passkey(
+    pool: &PgPool,
+    principal_id: Uuid,
+    credential_id: &[u8],
+    passkey_json: &str,
+    backed_up: bool,
+    transports: &[String],
+    name: &str,
+) -> Result<Uuid, DbError> {
+    let row = sqlx::query(
+        "INSERT INTO principal_passkey
+            (principal_id, credential_id, passkey_json, backed_up, transports, name)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING id",
+    )
+    .bind(principal_id)
+    .bind(credential_id)
+    .bind(passkey_json)
+    .bind(backed_up)
+    .bind(transports)
+    .bind(name)
+    .fetch_one(pool)
+    .await?;
+    Ok(row.get("id"))
+}
+
+pub async fn list_passkeys_for_principal(
+    pool: &PgPool,
+    principal_id: Uuid,
+) -> Result<Vec<PasskeyRow>, DbError> {
+    let rows = sqlx::query(
+        "SELECT id, principal_id, credential_id, passkey_json, backed_up,
+                transports, name, created_at, last_used_at
+           FROM principal_passkey
+          WHERE principal_id = $1
+          ORDER BY created_at ASC",
+    )
+    .bind(principal_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.iter().map(row_to_passkey).collect())
+}
+
+pub async fn get_passkey_by_credential_id(
+    pool: &PgPool,
+    credential_id: &[u8],
+) -> Result<Option<PasskeyRow>, DbError> {
+    let row = sqlx::query(
+        "SELECT id, principal_id, credential_id, passkey_json, backed_up,
+                transports, name, created_at, last_used_at
+           FROM principal_passkey
+          WHERE credential_id = $1",
+    )
+    .bind(credential_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.as_ref().map(row_to_passkey))
+}
+
+pub async fn get_passkeys_for_authentication(
+    pool: &PgPool,
+    principal_id: Uuid,
+) -> Result<Vec<PasskeyRow>, DbError> {
+    let rows = sqlx::query(
+        "SELECT id, principal_id, credential_id, passkey_json, backed_up,
+                transports, name, created_at, last_used_at
+           FROM principal_passkey
+          WHERE principal_id = $1
+          ORDER BY created_at ASC",
+    )
+    .bind(principal_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.iter().map(row_to_passkey).collect())
+}
+
+pub async fn update_passkey_after_auth(
+    pool: &PgPool,
+    passkey_id: Uuid,
+    passkey_json: &str,
+    last_used_at: DateTime<Utc>,
+) -> Result<(), DbError> {
+    sqlx::query(
+        "UPDATE principal_passkey
+            SET passkey_json = $2, last_used_at = $3
+          WHERE id = $1",
+    )
+    .bind(passkey_id)
+    .bind(passkey_json)
+    .bind(last_used_at)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Returns true if the row existed and was deleted.
+pub async fn delete_passkey(
+    pool: &PgPool,
+    passkey_id: Uuid,
+    principal_id: Uuid,
+) -> Result<bool, DbError> {
+    let result = sqlx::query("DELETE FROM principal_passkey WHERE id = $1 AND principal_id = $2")
+        .bind(passkey_id)
+        .bind(principal_id)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+// ----------------------------------------------------------------------------
+// WebAuthn — ZK envelopes
+// ----------------------------------------------------------------------------
+
+pub struct ZkEnvelopeRow {
+    pub id: Uuid,
+    pub vault_id: Uuid,
+    pub passkey_id: Uuid,
+    pub ciphertext: Vec<u8>,
+    pub nonce: Vec<u8>,
+    pub created_at: DateTime<Utc>,
+}
+
+pub async fn upsert_zk_envelope(
+    pool: &PgPool,
+    vault_id: Uuid,
+    passkey_id: Uuid,
+    ciphertext: &[u8],
+    nonce: &[u8],
+) -> Result<(), DbError> {
+    sqlx::query(
+        "INSERT INTO zk_key_envelope (vault_id, passkey_id, ciphertext, nonce)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (vault_id, passkey_id)
+         DO UPDATE SET ciphertext = EXCLUDED.ciphertext, nonce = EXCLUDED.nonce",
+    )
+    .bind(vault_id)
+    .bind(passkey_id)
+    .bind(ciphertext)
+    .bind(nonce)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn get_zk_envelopes_for_vault(
+    pool: &PgPool,
+    vault_id: Uuid,
+) -> Result<Vec<ZkEnvelopeRow>, DbError> {
+    let rows = sqlx::query(
+        "SELECT id, vault_id, passkey_id, ciphertext, nonce, created_at
+           FROM zk_key_envelope
+          WHERE vault_id = $1",
+    )
+    .bind(vault_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .iter()
+        .map(|r| ZkEnvelopeRow {
+            id: r.get("id"),
+            vault_id: r.get("vault_id"),
+            passkey_id: r.get("passkey_id"),
+            ciphertext: r.get("ciphertext"),
+            nonce: r.get("nonce"),
+            created_at: r.get("created_at"),
+        })
+        .collect())
+}
+
+pub struct ZkRecoveryEnvelopeRow {
+    pub id: Uuid,
+    pub vault_id: Uuid,
+    pub principal_id: Uuid,
+    pub code_salt: Vec<u8>,
+    pub ciphertext: Vec<u8>,
+    pub nonce: Vec<u8>,
+    pub created_at: DateTime<Utc>,
+}
+
+pub async fn upsert_zk_recovery_envelope(
+    pool: &PgPool,
+    vault_id: Uuid,
+    principal_id: Uuid,
+    code_salt: &[u8],
+    ciphertext: &[u8],
+    nonce: &[u8],
+) -> Result<(), DbError> {
+    sqlx::query(
+        "INSERT INTO zk_recovery_envelope
+            (vault_id, principal_id, code_salt, ciphertext, nonce)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (vault_id, principal_id)
+         DO UPDATE SET
+            code_salt = EXCLUDED.code_salt,
+            ciphertext = EXCLUDED.ciphertext,
+            nonce = EXCLUDED.nonce",
+    )
+    .bind(vault_id)
+    .bind(principal_id)
+    .bind(code_salt)
+    .bind(ciphertext)
+    .bind(nonce)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn get_zk_recovery_envelope(
+    pool: &PgPool,
+    vault_id: Uuid,
+) -> Result<Option<ZkRecoveryEnvelopeRow>, DbError> {
+    let row = sqlx::query(
+        "SELECT id, vault_id, principal_id, code_salt, ciphertext, nonce, created_at
+           FROM zk_recovery_envelope
+          WHERE vault_id = $1",
+    )
+    .bind(vault_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| ZkRecoveryEnvelopeRow {
+        id: r.get("id"),
+        vault_id: r.get("vault_id"),
+        principal_id: r.get("principal_id"),
+        code_salt: r.get("code_salt"),
+        ciphertext: r.get("ciphertext"),
+        nonce: r.get("nonce"),
+        created_at: r.get("created_at"),
+    }))
+}
+
+// ----------------------------------------------------------------------------
+// WebAuthn — recovery codes
+// ----------------------------------------------------------------------------
+
+pub struct RecoveryRow {
+    pub principal_id: Uuid,
+    pub code_salt: Vec<u8>,
+    pub code_verifier: Vec<u8>,
+    pub created_at: DateTime<Utc>,
+}
+
+pub async fn upsert_principal_recovery(
+    pool: &PgPool,
+    principal_id: Uuid,
+    code_salt: &[u8],
+    code_verifier: &[u8],
+) -> Result<(), DbError> {
+    sqlx::query(
+        "INSERT INTO principal_recovery (principal_id, code_salt, code_verifier)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (principal_id)
+         DO UPDATE SET
+            code_salt = EXCLUDED.code_salt,
+            code_verifier = EXCLUDED.code_verifier,
+            created_at = now()",
+    )
+    .bind(principal_id)
+    .bind(code_salt)
+    .bind(code_verifier)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn get_principal_recovery(
+    pool: &PgPool,
+    principal_id: Uuid,
+) -> Result<Option<RecoveryRow>, DbError> {
+    let row = sqlx::query(
+        "SELECT principal_id, code_salt, code_verifier, created_at
+           FROM principal_recovery
+          WHERE principal_id = $1",
+    )
+    .bind(principal_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| RecoveryRow {
+        principal_id: r.get("principal_id"),
+        code_salt: r.get("code_salt"),
+        code_verifier: r.get("code_verifier"),
+        created_at: r.get("created_at"),
+    }))
+}
+
+pub async fn get_principal_recovery_by_email(
+    pool: &PgPool,
+    email: &str,
+) -> Result<Option<(Uuid, RecoveryRow)>, DbError> {
+    let row = sqlx::query(
+        "SELECT pr.principal_id, pr.code_salt, pr.code_verifier, pr.created_at
+           FROM principal_recovery pr
+           JOIN principal p ON p.id = pr.principal_id
+          WHERE p.primary_email = $1",
+    )
+    .bind(email)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| {
+        let pid: Uuid = r.get("principal_id");
+        let recovery = RecoveryRow {
+            principal_id: pid,
+            code_salt: r.get("code_salt"),
+            code_verifier: r.get("code_verifier"),
+            created_at: r.get("created_at"),
+        };
+        (pid, recovery)
+    }))
+}
+
+/// Count how many passkeys a principal has.
+pub async fn count_passkeys_for_principal(
+    pool: &PgPool,
+    principal_id: Uuid,
+) -> Result<i64, DbError> {
+    let row = sqlx::query("SELECT COUNT(*) FROM principal_passkey WHERE principal_id = $1")
+        .bind(principal_id)
+        .fetch_one(pool)
+        .await?;
+    Ok(row.get::<i64, _>(0))
+}
+
+/// Count how many ZK vaults a principal has (for warning on last-passkey delete).
+pub async fn count_zk_vaults_for_principal(
+    pool: &PgPool,
+    principal_id: Uuid,
+) -> Result<i64, DbError> {
+    let row = sqlx::query(
+        "SELECT COUNT(*) FROM vault WHERE principal_id = $1 AND tier = 'ZERO_KNOWLEDGE'",
+    )
+    .bind(principal_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(row.get::<i64, _>(0))
+}
+
+// ----------------------------------------------------------------------------
+// Principal-level Recovery Key (PRK)
+// ----------------------------------------------------------------------------
+
+pub struct PrincipalRecoveryKeyRow {
+    pub principal_id: Uuid,
+    pub code_salt: Vec<u8>,
+    pub prk_code_ct: Vec<u8>,
+    pub prk_code_nonce: Vec<u8>,
+    pub prk_prf_ct: Vec<u8>,
+    pub prk_prf_nonce: Vec<u8>,
+}
+
+/// Store the principal's Recovery Key wraps. Insert-once (`DO NOTHING`): the PRK
+/// is fixed for the account's life, so re-running never orphans existing Vault
+/// recovery envelopes.
+pub async fn upsert_principal_recovery_key(
+    pool: &PgPool,
+    principal_id: Uuid,
+    code_salt: &[u8],
+    prk_code_ct: &[u8],
+    prk_code_nonce: &[u8],
+    prk_prf_ct: &[u8],
+    prk_prf_nonce: &[u8],
+) -> Result<(), DbError> {
+    sqlx::query(
+        "INSERT INTO principal_recovery_key
+            (principal_id, code_salt, prk_code_ct, prk_code_nonce, prk_prf_ct, prk_prf_nonce)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (principal_id) DO NOTHING",
+    )
+    .bind(principal_id)
+    .bind(code_salt)
+    .bind(prk_code_ct)
+    .bind(prk_code_nonce)
+    .bind(prk_prf_ct)
+    .bind(prk_prf_nonce)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn get_principal_recovery_key(
+    pool: &PgPool,
+    principal_id: Uuid,
+) -> Result<Option<PrincipalRecoveryKeyRow>, DbError> {
+    let row = sqlx::query(
+        "SELECT principal_id, code_salt, prk_code_ct, prk_code_nonce, prk_prf_ct, prk_prf_nonce
+           FROM principal_recovery_key WHERE principal_id = $1",
+    )
+    .bind(principal_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| PrincipalRecoveryKeyRow {
+        principal_id: r.get("principal_id"),
+        code_salt: r.get("code_salt"),
+        prk_code_ct: r.get("prk_code_ct"),
+        prk_code_nonce: r.get("prk_code_nonce"),
+        prk_prf_ct: r.get("prk_prf_ct"),
+        prk_prf_nonce: r.get("prk_prf_nonce"),
+    }))
+}
+
+pub async fn get_principal_recovery_key_by_email(
+    pool: &PgPool,
+    email: &str,
+) -> Result<Option<PrincipalRecoveryKeyRow>, DbError> {
+    let row = sqlx::query(
+        "SELECT prk.principal_id, prk.code_salt, prk.prk_code_ct, prk.prk_code_nonce,
+                prk.prk_prf_ct, prk.prk_prf_nonce
+           FROM principal_recovery_key prk
+           JOIN principal p ON p.id = prk.principal_id
+          WHERE p.primary_email = $1",
+    )
+    .bind(email)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| PrincipalRecoveryKeyRow {
+        principal_id: r.get("principal_id"),
+        code_salt: r.get("code_salt"),
+        prk_code_ct: r.get("prk_code_ct"),
+        prk_code_nonce: r.get("prk_code_nonce"),
+        prk_prf_ct: r.get("prk_prf_ct"),
+        prk_prf_nonce: r.get("prk_prf_nonce"),
+    }))
+}
+
+/// Upsert a Private Vault's DEK-wrapped-under-PRK recovery envelope.
+pub async fn upsert_vault_prk_envelope(
+    pool: &PgPool,
+    vault_id: Uuid,
+    principal_id: Uuid,
+    ciphertext: &[u8],
+    nonce: &[u8],
+) -> Result<(), DbError> {
+    sqlx::query(
+        "INSERT INTO vault_prk_envelope (vault_id, principal_id, ciphertext, nonce)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (vault_id) DO UPDATE SET
+            ciphertext = EXCLUDED.ciphertext,
+            nonce = EXCLUDED.nonce,
+            created_at = now()",
+    )
+    .bind(vault_id)
+    .bind(principal_id)
+    .bind(ciphertext)
+    .bind(nonce)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn get_vault_prk_envelope(
+    pool: &PgPool,
+    vault_id: Uuid,
+) -> Result<Option<(Vec<u8>, Vec<u8>)>, DbError> {
+    let row = sqlx::query("SELECT ciphertext, nonce FROM vault_prk_envelope WHERE vault_id = $1")
+        .bind(vault_id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(|r| (r.get("ciphertext"), r.get("nonce"))))
+}
+
+// ----------------------------------------------------------------------------
+// Private Letter heir envelope (body sealed under a recipient passphrase)
+// ----------------------------------------------------------------------------
+
+pub struct HeirEnvelopeRow {
+    pub ciphertext: Vec<u8>,
+    pub nonce: Vec<u8>,
+    /// 'manual' | 'split' | 'operator'.
+    pub mode: String,
+    /// PBKDF2 salt — manual mode only.
+    pub salt: Option<Vec<u8>>,
+    /// Operator's half (split) or the whole key (operator) — released at unseal.
+    pub release_secret: Option<Vec<u8>>,
+}
+
+pub async fn upsert_zk_letter_heir_envelope(
+    pool: &PgPool,
+    letter_id: LetterId,
+    ciphertext: &[u8],
+    nonce: &[u8],
+    mode: &str,
+    salt: Option<&[u8]>,
+    release_secret: Option<&[u8]>,
+) -> Result<(), DbError> {
+    sqlx::query(
+        "INSERT INTO zk_letter_heir_envelope
+            (letter_id, ciphertext, nonce, mode, salt, release_secret)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (letter_id) DO UPDATE SET
+            ciphertext = EXCLUDED.ciphertext,
+            nonce = EXCLUDED.nonce,
+            mode = EXCLUDED.mode,
+            salt = EXCLUDED.salt,
+            release_secret = EXCLUDED.release_secret,
+            created_at = now()",
+    )
+    .bind(letter_id.as_uuid())
+    .bind(ciphertext)
+    .bind(nonce)
+    .bind(mode)
+    .bind(salt)
+    .bind(release_secret)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn get_zk_letter_heir_envelope(
+    pool: &PgPool,
+    letter_id: LetterId,
+) -> Result<Option<HeirEnvelopeRow>, DbError> {
+    let row = sqlx::query(
+        "SELECT ciphertext, nonce, mode, salt, release_secret
+           FROM zk_letter_heir_envelope WHERE letter_id = $1",
+    )
+    .bind(letter_id.as_uuid())
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| HeirEnvelopeRow {
+        ciphertext: r.get("ciphertext"),
+        nonce: r.get("nonce"),
+        mode: r.get("mode"),
+        salt: r.try_get("salt").ok().flatten(),
+        release_secret: r.try_get("release_secret").ok().flatten(),
     }))
 }

@@ -215,7 +215,7 @@ pub async fn signup(
 
 /// The self-hosted edition has a single plan; the sign-up `plan` parameter is
 /// accepted for API compatibility but ignored.
-fn parse_plan_param(_s: Option<&str>) -> ApiResult<PlanId> {
+pub fn parse_plan_param(_s: Option<&str>) -> ApiResult<PlanId> {
     Ok(PlanId::SelfHosted)
 }
 
@@ -369,11 +369,7 @@ pub async fn create_vault(
     let pid = current_principal(&state, &headers).await?;
 
     let tier = match body.tier.as_deref() {
-        Some("ZERO_KNOWLEDGE") | Some("zero_knowledge") => {
-            return Err(ApiError::BadRequest(
-                "Zero-Knowledge tier is not implemented in the MVP".into(),
-            ));
-        }
+        Some("ZERO_KNOWLEDGE") | Some("zero_knowledge") => Tier::ZeroKnowledge,
         _ => Tier::HonestOperator,
     };
 
@@ -1295,6 +1291,23 @@ pub struct ClaimView {
     pub recipient_email: String,
     pub body: String,
     pub is_drill: bool,
+    /// True for a Private (Zero-Knowledge) Letter: `body` is empty and the
+    /// recipient decrypts the heir envelope below.
+    pub zk: bool,
+    /// 'manual' | 'split' | 'operator' — how the recipient obtains the key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub heir_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub heir_ciphertext: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub heir_nonce: Option<String>,
+    /// manual mode: PBKDF2 salt (hex).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub heir_salt: Option<String>,
+    /// split: operator's half of the key (base64url). operator: the whole key.
+    /// Released only here, at claim time (after the Vault unseals).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub heir_release_secret: Option<String>,
 }
 
 // ----------------------------------------------------------------------------
@@ -1829,6 +1842,43 @@ pub async fn claim_release(
     let (letter_id, _rcpt, is_drill) = db::consume_release_claim(&state.pool, &hash)
         .await?
         .ok_or(ApiError::NotFound)?;
+    let letter = db::fetch_letter_full(&state.pool, letter_id).await?;
+    let vault = db::fetch_vault(&state.pool, letter.vault_id).await?;
+
+    // Private (Zero-Knowledge) Letters: the operator holds no key. Hand the
+    // recipient the heir envelope to open with the passphrase the Principal
+    // shared out-of-band (see specs/14 §4). No server-side decryption.
+    if vault.tier == Tier::ZeroKnowledge {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine as _;
+        let heir = db::get_zk_letter_heir_envelope(&state.pool, letter_id).await?;
+        let (heir_mode, heir_ciphertext, heir_nonce, heir_salt, heir_release_secret) = match heir {
+            Some(h) => (
+                Some(h.mode),
+                Some(URL_SAFE_NO_PAD.encode(&h.ciphertext)),
+                Some(URL_SAFE_NO_PAD.encode(&h.nonce)),
+                h.salt.as_deref().map(hex::encode),
+                h.release_secret
+                    .as_deref()
+                    .map(|s| URL_SAFE_NO_PAD.encode(s)),
+            ),
+            None => (None, None, None, None, None),
+        };
+        return Ok(Json(ClaimView {
+            title: letter.title,
+            recipient_email: letter.recipient_email,
+            body: String::new(),
+            is_drill,
+            zk: true,
+            heir_mode,
+            heir_ciphertext,
+            heir_nonce,
+            heir_salt,
+            heir_release_secret,
+        }));
+    }
+
+    // Standard Letters: operator KMS-decrypts (drill payload when applicable).
     let (title, rcpt, ciphertext, nonce) =
         db::fetch_letter_ciphertext(&state.pool, letter_id, is_drill).await?;
 
@@ -1850,6 +1900,12 @@ pub async fn claim_release(
         recipient_email: rcpt,
         body,
         is_drill,
+        zk: false,
+        heir_mode: None,
+        heir_ciphertext: None,
+        heir_nonce: None,
+        heir_salt: None,
+        heir_release_secret: None,
     }))
 }
 
@@ -1916,6 +1972,17 @@ pub async fn export_letter(
     let vault = db::fetch_vault(&state.pool, VaultId(vault_id)).await?;
     if vault.principal_id != pid {
         return Err(ApiError::NotFound);
+    }
+
+    // Private (ZK) letters are sealed in the browser under the vault DEK — the
+    // operator holds no key and cannot re-encrypt them here. Decrypt and save
+    // them from the Vault page instead.
+    if vault.tier == Tier::ZeroKnowledge {
+        return Err(ApiError::Conflict(
+            "Private (Zero-Knowledge) Vault letters are encrypted in your browser and \
+             can't be exported server-side. Open and save them from the Vault page."
+                .into(),
+        ));
     }
 
     let letter = db::fetch_letter_full(&state.pool, LetterId(letter_id)).await?;
@@ -2724,4 +2791,485 @@ pub async fn bank_dormancy_webhook(
     }
 
     Ok(Json(json!({ "ok": true })))
+}
+
+// ----------------------------------------------------------------------------
+// Public trust endpoints (no auth)
+// ----------------------------------------------------------------------------
+
+pub async fn get_warrant_canary() -> Json<serde_json::Value> {
+    Json(json!({
+        "statement": "As of this statement, the operator of this Paschal instance has not received any secret government order, search warrant, gag order, or national-security letter requiring them to compromise the security or integrity of any user's data, and has not been compelled to install any backdoor.",
+        "issued_at": "2026-06-01T00:00:00Z",
+        "next_update_by": "2026-09-01T00:00:00Z"
+    }))
+}
+
+pub async fn list_transparency_log(
+    State(state): State<AppState>,
+) -> ApiResult<Json<Vec<serde_json::Value>>> {
+    let entries = db::list_transparency_entries(&state.pool, 200).await?;
+    let resp: Vec<serde_json::Value> = entries
+        .into_iter()
+        .map(|e| {
+            json!({
+                "id": e.id,
+                "kind": e.kind,
+                "ts": e.ts.to_rfc3339(),
+                "payload": e.payload_json,
+            })
+        })
+        .collect();
+    Ok(Json(resp))
+}
+
+// ---------------------------------------------------------------------------
+// Duress signal — covert, user-armed panic webhook that freezes release.
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+pub struct ArmDuressReq {
+    pub alert_email: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+pub struct DuressView {
+    pub armed: bool,
+    pub triggered_at: Option<String>,
+    pub webhook_url: Option<String>,
+    pub alert_email: Option<String>,
+}
+
+fn duress_view(state: &AppState, row: Option<db::DuressSignalRow>) -> DuressView {
+    match row {
+        Some(r) => DuressView {
+            armed: true,
+            triggered_at: r.triggered_at.map(|t| t.to_rfc3339()),
+            webhook_url: Some(format!(
+                "{}/v1/signals/duress/{}",
+                state.config.public_base_url.trim_end_matches('/'),
+                r.webhook_id
+            )),
+            alert_email: r.alert_email,
+        },
+        None => DuressView {
+            armed: false,
+            triggered_at: None,
+            webhook_url: None,
+            alert_email: None,
+        },
+    }
+}
+
+pub async fn arm_duress(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<ArmDuressReq>,
+) -> ApiResult<Json<DuressView>> {
+    let pid = current_principal(&state, &headers).await?;
+    let alert_email = body
+        .alert_email
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if let Some(e) = alert_email {
+        if !e.contains('@') {
+            return Err(ApiError::BadRequest("alert_email looks invalid".into()));
+        }
+    }
+    let row = db::arm_duress(&state.pool, pid, Uuid::new_v4(), alert_email).await?;
+    Ok(Json(duress_view(&state, Some(row))))
+}
+
+pub async fn get_duress(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ApiResult<Json<DuressView>> {
+    let pid = current_principal(&state, &headers).await?;
+    let row = db::fetch_duress(&state.pool, pid).await?;
+    Ok(Json(duress_view(&state, row)))
+}
+
+pub async fn revoke_duress(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ApiResult<axum::http::StatusCode> {
+    let pid = current_principal(&state, &headers).await?;
+    db::delete_duress(&state.pool, pid).await?;
+    Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
+/// Public covert trigger. Always returns 200 (even for an unknown webhook) so an
+/// observer cannot probe it. When valid it freezes the dead-man's switch (via
+/// `triggered_at`, checked in the aggregator) and silently alerts the contact.
+pub async fn duress_webhook(
+    State(state): State<AppState>,
+    Path(webhook_id): Path<Uuid>,
+) -> axum::http::StatusCode {
+    if let Ok(Some(row)) = db::trigger_duress(&state.pool, webhook_id, Utc::now()).await {
+        if let Some(email) = row.alert_email.as_deref() {
+            state
+                .notifications
+                .send(crate::notifications::OutboundMessage {
+                    channel: crate::notifications::Channel::Email,
+                    to: email.to_string(),
+                    subject: Some("Wellbeing check — please reach out".into()),
+                    body: "Someone who trusts you has triggered a private safety alert \
+                           through Paschal. Please check on them directly and discreetly. \
+                           This message was sent on their prior instruction."
+                        .into(),
+                })
+                .await;
+        }
+        let _ = db::append_transparency_entry(
+            &state.pool,
+            "DURESS_TRIGGERED",
+            &hash_bytes(row.principal_id.as_uuid().as_bytes()),
+            json!({ "triggered_at": row.triggered_at }),
+            Some(row.principal_id),
+            None,
+        )
+        .await;
+    }
+    axum::http::StatusCode::OK
+}
+
+// ----------------------------------------------------------------------------
+// Passwordless sign-in (email)
+// ----------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct SigninReq {
+    pub email: String,
+}
+
+#[derive(Serialize)]
+pub struct SigninResp {
+    pub principal_id: PrincipalId,
+    pub session_token: String,
+}
+
+pub async fn signin(
+    State(state): State<AppState>,
+    Json(body): Json<SigninReq>,
+) -> ApiResult<Json<SigninResp>> {
+    if !body.email.contains('@') {
+        return Err(ApiError::BadRequest("email looks invalid".into()));
+    }
+    let principal = db::fetch_principal_by_email(&state.pool, &body.email)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    let session = random_token();
+    db::create_session(&state.pool, principal.id, &hash_token(&session), 24 * 30).await?;
+    Ok(Json(SigninResp {
+        principal_id: principal.id,
+        session_token: session,
+    }))
+}
+
+/// Map the `plan` query parameter from sign-up into a concrete PlanId.
+/// Accepts both the short tier names ("draft", "monthly", "annual",
+/// "plus", "plus_annual", "legacy", "legacy_annual") and the explicit
+/// underscore IDs ("estate_monthly_v2", etc).
+
+// Zero-Knowledge letters (browser-encrypted; operator stores ciphertext only)
+// ----------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct SealZkLetterReq {
+    pub title: String,
+    pub recipient_email: String,
+    /// Base64url AES-256-GCM ciphertext of the letter body, encrypted in the
+    /// browser under the vault DEK. The operator never receives the plaintext.
+    pub ciphertext: String,
+    /// Base64url 12-byte GCM nonce.
+    pub nonce: String,
+    #[serde(default)]
+    pub scheduled_release_at: Option<chrono::DateTime<Utc>>,
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub release_mode: Option<String>,
+    /// Optional heir envelope: the body re-sealed under a key the recipient can
+    /// obtain after release. `heir_mode` selects how (default 'manual').
+    #[serde(default)]
+    pub heir_ciphertext: Option<String>,
+    #[serde(default)]
+    pub heir_nonce: Option<String>,
+    /// 'manual' (default) | 'split' | 'operator'.
+    #[serde(default)]
+    pub heir_mode: Option<String>,
+    /// manual mode: PBKDF2 salt (hex).
+    #[serde(default)]
+    pub heir_salt: Option<String>,
+    /// split: the operator's half of the key (base64url). operator: the whole
+    /// key. Stored, released to the recipient at claim.
+    #[serde(default)]
+    pub heir_release_secret: Option<String>,
+    /// split only: the recipient's half (base64url). Emailed to the recipient at
+    /// creation and NEVER stored — so the operator never holds both halves.
+    #[serde(default)]
+    pub heir_recipient_share: Option<String>,
+}
+
+/// Seal a Letter into a Private (Zero-Knowledge) Vault. The body arrives
+/// already encrypted under the vault DEK; we store the ciphertext verbatim and
+/// run NO operator-side KMS seal. Mirrors `seal_letter`'s authoring guards.
+pub async fn seal_zk_letter(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(vault_id): Path<Uuid>,
+    Json(body): Json<SealZkLetterReq>,
+) -> ApiResult<Json<LetterMetaView>> {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine as _;
+
+    let pid = current_principal(&state, &headers).await?;
+    let vault = db::fetch_vault(&state.pool, VaultId(vault_id)).await?;
+    if vault.principal_id != pid {
+        return Err(ApiError::NotFound);
+    }
+    if vault.tier != Tier::ZeroKnowledge {
+        return Err(ApiError::BadRequest(
+            "This endpoint is for Private (Zero-Knowledge) Vaults. Use /letters to \
+             seal in a Standard Vault."
+                .into(),
+        ));
+    }
+
+    validate_letter_kind(body.kind.as_deref())?;
+    validate_release_mode(
+        body.release_mode.as_deref(),
+        body.scheduled_release_at.as_ref(),
+    )?;
+
+    let sub = db::fetch_subscription(&state.pool, pid).await?;
+    if !sub.state.allows_authoring() {
+        return Err(ApiError::Forbidden(format!(
+            "Subscription state {:?} does not permit authoring",
+            sub.state
+        )));
+    }
+    if vault.state != VaultState::Active {
+        return Err(ApiError::Conflict(format!(
+            "Vault state {:?} does not permit sealing new Letters",
+            vault.state
+        )));
+    }
+
+    let plan = plan_features(sub.plan_id);
+    let current_letters = db::letter_count(&state.pool, vault.id).await? as u32;
+    if current_letters >= plan.max_letters_per_vault {
+        return Err(ApiError::Forbidden(format!(
+            "Letter limit reached ({} of {} per Vault). Adjust the plan limits in your deployment configuration to increase it.",
+            current_letters, plan.max_letters_per_vault
+        )));
+    }
+
+    if let Some(t) = body.scheduled_release_at {
+        if t < Utc::now() {
+            return Err(ApiError::BadRequest(
+                "scheduled_release_at must be in the future".into(),
+            ));
+        }
+        let horizon = Utc::now() + chrono::Duration::days(plan.scheduled_horizon_days);
+        if t > horizon {
+            return Err(ApiError::BadRequest(format!(
+                "Scheduled releases are limited to {} days in the future. \
+                 Adjust the scheduled-release horizon in your deployment configuration to extend it.",
+                plan.scheduled_horizon_days
+            )));
+        }
+    }
+
+    let ciphertext = URL_SAFE_NO_PAD
+        .decode(body.ciphertext.as_bytes())
+        .map_err(|_| ApiError::BadRequest("ciphertext must be base64url".into()))?;
+    let nonce = URL_SAFE_NO_PAD
+        .decode(body.nonce.as_bytes())
+        .map_err(|_| ApiError::BadRequest("nonce must be base64url".into()))?;
+    if ciphertext.is_empty() {
+        return Err(ApiError::BadRequest("ciphertext is empty".into()));
+    }
+    if nonce.len() != 12 {
+        return Err(ApiError::BadRequest("nonce must be 12 bytes".into()));
+    }
+
+    let letter = db::seal_letter(
+        &state.pool,
+        db::LetterSealInput {
+            vault_id: vault.id,
+            title: &body.title,
+            recipient_email: &body.recipient_email,
+            ciphertext: &ciphertext,
+            nonce: &nonce,
+            drill_ciphertext: None,
+            drill_nonce: None,
+            scheduled_release_at: body.scheduled_release_at,
+            kind: body.kind.as_deref(),
+            category: body.category.as_deref(),
+            release_mode: body.release_mode.as_deref(),
+        },
+    )
+    .await?;
+
+    // Optional heir envelope: the same body re-sealed under a key the recipient
+    // can obtain after release. The mode decides how the key reaches them.
+    let heir_mode = body.heir_mode.as_deref().unwrap_or("manual");
+    let has_heir = if let (Some(hc), Some(hn)) = (&body.heir_ciphertext, &body.heir_nonce) {
+        let ciphertext = URL_SAFE_NO_PAD
+            .decode(hc.as_bytes())
+            .map_err(|_| ApiError::BadRequest("heir_ciphertext must be base64url".into()))?;
+        let nonce = URL_SAFE_NO_PAD
+            .decode(hn.as_bytes())
+            .map_err(|_| ApiError::BadRequest("heir_nonce must be base64url".into()))?;
+        if nonce.len() != 12 {
+            return Err(ApiError::BadRequest("heir_nonce must be 12 bytes".into()));
+        }
+        match heir_mode {
+            "manual" => {
+                let salt = body.heir_salt.as_deref().ok_or_else(|| {
+                    ApiError::BadRequest("manual heir mode needs heir_salt".into())
+                })?;
+                let salt = hex::decode(salt)
+                    .map_err(|_| ApiError::BadRequest("heir_salt must be hex".into()))?;
+                db::upsert_zk_letter_heir_envelope(
+                    &state.pool,
+                    letter.id,
+                    &ciphertext,
+                    &nonce,
+                    "manual",
+                    Some(&salt),
+                    None,
+                )
+                .await?;
+            }
+            "split" => {
+                let op_share = body.heir_release_secret.as_deref().ok_or_else(|| {
+                    ApiError::BadRequest("split heir mode needs heir_release_secret".into())
+                })?;
+                let op_share = URL_SAFE_NO_PAD.decode(op_share.as_bytes()).map_err(|_| {
+                    ApiError::BadRequest("heir_release_secret must be base64url".into())
+                })?;
+                let rcpt_share = body.heir_recipient_share.as_deref().ok_or_else(|| {
+                    ApiError::BadRequest("split heir mode needs heir_recipient_share".into())
+                })?;
+                // Store ONLY the operator's half — never the recipient's. Email
+                // the recipient theirs now, then discard it.
+                db::upsert_zk_letter_heir_envelope(
+                    &state.pool,
+                    letter.id,
+                    &ciphertext,
+                    &nonce,
+                    "split",
+                    None,
+                    Some(&op_share),
+                )
+                .await?;
+                tx::heir_share(
+                    state.notifications.as_ref(),
+                    &body.recipient_email,
+                    rcpt_share,
+                )
+                .await;
+            }
+            "operator" => {
+                let key = body.heir_release_secret.as_deref().ok_or_else(|| {
+                    ApiError::BadRequest("operator heir mode needs heir_release_secret".into())
+                })?;
+                let key = URL_SAFE_NO_PAD.decode(key.as_bytes()).map_err(|_| {
+                    ApiError::BadRequest("heir_release_secret must be base64url".into())
+                })?;
+                db::upsert_zk_letter_heir_envelope(
+                    &state.pool,
+                    letter.id,
+                    &ciphertext,
+                    &nonce,
+                    "operator",
+                    None,
+                    Some(&key),
+                )
+                .await?;
+            }
+            other => {
+                return Err(ApiError::BadRequest(format!("unknown heir_mode '{other}'")));
+            }
+        }
+        true
+    } else {
+        false
+    };
+
+    let _ = db::append_transparency_entry(
+        &state.pool,
+        "LETTER_SEALED",
+        &hash_bytes(letter.id.as_uuid().as_bytes()),
+        json!({
+            "letter_id": letter.id,
+            "vault_id": vault.id,
+            "title_hash": hex::encode(hash_bytes(body.title.as_bytes())),
+            "zero_knowledge": true,
+            "has_heir_envelope": has_heir,
+            "scheduled_release_at": body.scheduled_release_at,
+        }),
+        Some(pid),
+        Some(vault.id),
+    )
+    .await;
+
+    Metrics::inc(&state.metrics.letters_sealed_total);
+    Ok(Json(LetterMetaView {
+        id: letter.id,
+        title: letter.title,
+        recipient_email: letter.recipient_email,
+        sealed_at: letter.sealed_at.to_rfc3339(),
+        scheduled_release_at: body.scheduled_release_at.map(|t| t.to_rfc3339()),
+    }))
+}
+
+#[derive(Serialize)]
+pub struct ZkLetterCiphertextView {
+    /// Base64url AES-256-GCM ciphertext, decryptable only with the vault DEK.
+    pub ciphertext: String,
+    /// Base64url 12-byte GCM nonce.
+    pub nonce: String,
+}
+
+/// Return a Private Letter's stored ciphertext so the author can decrypt it in
+/// the browser. The operator returns bytes it cannot read.
+pub async fn get_zk_letter_ciphertext(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((vault_id, letter_id)): Path<(Uuid, Uuid)>,
+) -> ApiResult<Json<ZkLetterCiphertextView>> {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine as _;
+
+    let pid = current_principal(&state, &headers).await?;
+    let vault = db::fetch_vault(&state.pool, VaultId(vault_id)).await?;
+    if vault.principal_id != pid {
+        return Err(ApiError::NotFound);
+    }
+    if vault.tier != Tier::ZeroKnowledge {
+        return Err(ApiError::BadRequest(
+            "This endpoint is for Private (Zero-Knowledge) Vaults.".into(),
+        ));
+    }
+
+    let letter = db::fetch_letter_full(&state.pool, LetterId(letter_id)).await?;
+    if letter.vault_id != vault.id {
+        return Err(ApiError::NotFound);
+    }
+    if letter.ciphertext.is_empty() {
+        return Err(ApiError::Conflict(
+            "letter has been crypto-erased and can no longer be opened".into(),
+        ));
+    }
+
+    Ok(Json(ZkLetterCiphertextView {
+        ciphertext: URL_SAFE_NO_PAD.encode(&letter.ciphertext),
+        nonce: URL_SAFE_NO_PAD.encode(&letter.nonce),
+    }))
 }

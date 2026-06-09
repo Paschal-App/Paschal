@@ -114,6 +114,26 @@
         text-align: center;
       }
       footer a { color: var(--slate); }
+      #zk-prompt { margin-top: 8px; }
+      #zk-prompt .meta { margin-bottom: 4px; }
+      #zk-prompt input {
+        width: 100%;
+        padding: 12px 14px;
+        font-size: 16px;
+        border: 1px solid var(--mist);
+        background: white;
+        margin: 12px 0;
+        box-sizing: border-box;
+      }
+      #zk-prompt button {
+        padding: 10px 20px;
+        font-size: 15px;
+        cursor: pointer;
+        background: var(--ink);
+        color: var(--parchment);
+        border: none;
+      }
+      #zk-prompt button:disabled { opacity: 0.5; cursor: not-allowed; }
     </style>
   </head>
   <body>
@@ -123,6 +143,14 @@
       <h1 id="title">Reaching the Beacon&hellip;</h1>
       <div class="meta" id="meta"></div>
       <hr />
+      <div id="zk-prompt" hidden>
+        <p class="meta" id="zk-prompt-label">
+          This letter is private. Enter the passphrase the sender shared with you to open it.
+        </p>
+        <input id="zk-pass-input" type="password" placeholder="Passphrase" autocomplete="off" />
+        <button id="zk-open-btn" type="button">Open letter</button>
+        <div id="zk-error" class="status" hidden></div>
+      </div>
       <pre class="body" id="body"></pre>
       <div id="attachments-section" class="attachments" hidden>
         <h2>Attachments</h2>
@@ -166,6 +194,92 @@
           bannerEl.hidden = false;
         }
 
+        function hexToBytes(h) {
+          const a = new Uint8Array(h.length / 2);
+          for (let i = 0; i < h.length; i += 2) a[i / 2] = parseInt(h.slice(i, i + 2), 16);
+          return a;
+        }
+        function b64urlToBytes(s) {
+          const p = s.replace(/-/g, "+").replace(/_/g, "/");
+          const pad = (4 - (p.length % 4)) % 4;
+          const bin = atob(p + "=".repeat(pad));
+          return Uint8Array.from(bin, (c) => c.charCodeAt(0));
+        }
+
+        // Obtain the AES-256-GCM key for the letter per its heir mode:
+        //   operator — the key is handed over directly (released only now).
+        //   split    — key = recipientCode XOR operatorShare (released now).
+        //   manual   — key = PBKDF2(passphrase, salt), 600k (matches the app).
+        async function deriveZkKey(data, input) {
+          if (data.heir_mode === "operator") {
+            return crypto.subtle.importKey(
+              "raw", b64urlToBytes(data.heir_release_secret), { name: "AES-GCM" }, false, ["decrypt"]
+            );
+          }
+          if (data.heir_mode === "split") {
+            const r = b64urlToBytes(input.trim());
+            const o = b64urlToBytes(data.heir_release_secret);
+            const k = new Uint8Array(r.length);
+            for (let i = 0; i < k.length; i++) k[i] = r[i] ^ o[i];
+            return crypto.subtle.importKey("raw", k, { name: "AES-GCM" }, false, ["decrypt"]);
+          }
+          const km = await crypto.subtle.importKey(
+            "raw", new TextEncoder().encode(input), "PBKDF2", false, ["deriveKey"]
+          );
+          return crypto.subtle.deriveKey(
+            { name: "PBKDF2", salt: hexToBytes(data.heir_salt), iterations: 600000, hash: "SHA-256" },
+            km, { name: "AES-GCM", length: 256 }, false, ["decrypt"]
+          );
+        }
+
+        async function decryptZkBody(data, key) {
+          const pt = await crypto.subtle.decrypt(
+            { name: "AES-GCM", iv: b64urlToBytes(data.heir_nonce) },
+            key,
+            b64urlToBytes(data.heir_ciphertext)
+          );
+          return new TextDecoder().decode(pt);
+        }
+
+        // Prompt the recipient for their passphrase (manual) or access code (split).
+        function setupZkPrompt(data) {
+          const promptEl = document.getElementById("zk-prompt");
+          const labelEl = document.getElementById("zk-prompt-label");
+          const input = document.getElementById("zk-pass-input");
+          const btn = document.getElementById("zk-open-btn");
+          const errEl = document.getElementById("zk-error");
+          const isSplit = data.heir_mode === "split";
+          labelEl.textContent = isSplit
+            ? "This letter is private. Paste the access code from the email you received when it was written."
+            : "This letter is private. Enter the passphrase the sender shared with you (for example, written with their will).";
+          input.placeholder = isSplit ? "Access code" : "Passphrase";
+          input.type = isSplit ? "text" : "password";
+          promptEl.hidden = false;
+          input.focus();
+          const open = async () => {
+            errEl.hidden = true;
+            const val = input.value;
+            if (!val) return;
+            btn.disabled = true;
+            btn.textContent = "Opening…";
+            try {
+              bodyEl.textContent = await decryptZkBody(data, await deriveZkKey(data, val));
+              promptEl.hidden = true;
+            } catch (e) {
+              errEl.textContent = isSplit
+                ? "That code didn't open the letter. Check it and try again."
+                : "That passphrase didn't open the letter. Check it and try again.";
+              errEl.hidden = false;
+              btn.disabled = false;
+              btn.textContent = "Open letter";
+            }
+          };
+          btn.addEventListener("click", open);
+          input.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") open();
+          });
+        }
+
         if (!token) {
           titleEl.textContent = "Missing claim token";
           showStatus(
@@ -206,6 +320,43 @@
 
           titleEl.textContent = data.title || "Released Letter";
           metaEl.textContent = `Delivered to ${data.recipient_email || "you"}.`;
+
+          // Private (Zero-Knowledge) letter: the Beacon holds no key. Decrypt in
+          // the browser with the passphrase the sender shared out-of-band.
+          if (data.zk) {
+            if (!data.heir_ciphertext) {
+              showStatus(
+                "This is a private letter, but the sender did not set up recipient " +
+                  "access, so it cannot be opened here. Reply to the email for help.",
+                false
+              );
+              return;
+            }
+            // operator mode: the key is handed over now — open automatically.
+            if (data.heir_mode === "operator") {
+              try {
+                bodyEl.textContent = await decryptZkBody(data, await deriveZkKey(data, ""));
+              } catch (e) {
+                showStatus("This letter could not be opened. Reply to the email for help.", false);
+                return;
+              }
+              showStatus(
+                "Reading this page consumed the token; it cannot be reloaded. Save what you need now.",
+                true
+              );
+              return;
+            }
+            // manual / split: prompt for the passphrase or access code.
+            setupZkPrompt(data);
+            showStatus(
+              "Reading this page consumed the token; it cannot be reloaded. Enter your " +
+                (data.heir_mode === "split" ? "access code" : "passphrase") +
+                " to open the letter.",
+              true
+            );
+            return;
+          }
+
           bodyEl.textContent = data.body || "";
 
           // The list of attachment links lives in the email — they each

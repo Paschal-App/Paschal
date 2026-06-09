@@ -5,6 +5,8 @@ use blob_store::{BlobStore, LocalFilesystemStore};
 use crypto_stub::{Kms, LocalFileKms};
 use paschal_transform::{default_pipeline, Transformer};
 use sqlx::PgPool;
+use url::Url;
+use webauthn_rs::WebauthnBuilder;
 
 use crate::notifications::{NotificationSink, StubNotifications};
 
@@ -21,6 +23,7 @@ pub struct AppState {
     pub notifications: Arc<dyn NotificationSink>,
     pub metrics: Arc<crate::metrics::Metrics>,
     pub config: Arc<Config>,
+    pub webauthn: Arc<webauthn_rs::Webauthn>,
 }
 
 pub struct Config {
@@ -70,12 +73,20 @@ impl AppState {
         std::fs::create_dir_all(&tmp).expect("blob dir");
         let blob_store: Arc<dyn BlobStore> = Arc::new(LocalFilesystemStore::new(tmp));
         let transformers: Arc<Vec<Box<dyn Transformer>>> = Arc::new(default_pipeline());
+        let webauthn = Arc::new(
+            WebauthnBuilder::new("localhost", &Url::parse("http://localhost").unwrap())
+                .unwrap()
+                .rp_name("Paschal (test)")
+                .build()
+                .unwrap(),
+        );
         Self {
             pool,
             kms,
             blob_store,
             transformers,
             notifications,
+            webauthn,
             metrics: Arc::new(crate::metrics::Metrics::new()),
             config: Arc::new(Config {
                 public_base_url: "http://test.localhost".into(),
@@ -173,10 +184,71 @@ impl AppState {
             rate_limit_per_minute: env_u32("RATE_LIMIT_PER_MINUTE", 240),
         };
 
+        // Notification backend: `stub` (default — log to file), `resend` (hosted
+        // email API), or `smtp` (any mail server you run). Email is the product's
+        // core delivery path, so a misconfigured backend falls back to the stub
+        // and logs loudly rather than silently dropping releases and invites.
         let notifications_log = std::env::var("STUB_NOTIFICATIONS_LOG")
             .unwrap_or_else(|_| "./logs/notifications.log".into());
+        let email_from =
+            std::env::var("EMAIL_FROM").unwrap_or_else(|_| "Paschal <noreply@localhost>".into());
         let notifications: Arc<dyn NotificationSink> =
-            Arc::new(StubNotifications::new(notifications_log));
+            match std::env::var("NOTIFICATIONS_BACKEND")
+                .unwrap_or_default()
+                .as_str()
+            {
+                "resend" => {
+                    // Guard like a feature flag: a non-`re_` value (e.g. an `unset`
+                    // placeholder) stays in stub mode rather than 401-ing every send.
+                    let api_key = std::env::var("RESEND_API_KEY").unwrap_or_default();
+                    if api_key.starts_with("re_") {
+                        tracing::info!(from = %email_from, "notifications: Resend");
+                        Arc::new(crate::notifications::ResendNotifications::new(
+                            api_key,
+                            email_from.clone(),
+                        ))
+                    } else {
+                        tracing::warn!(
+                            "NOTIFICATIONS_BACKEND=resend but RESEND_API_KEY has no re_ prefix; using stub"
+                        );
+                        Arc::new(StubNotifications::new(notifications_log))
+                    }
+                }
+                "smtp" => {
+                    let host = std::env::var("SMTP_HOST").unwrap_or_default();
+                    if host.is_empty() {
+                        tracing::warn!(
+                            "NOTIFICATIONS_BACKEND=smtp but SMTP_HOST is empty; using stub"
+                        );
+                        Arc::new(StubNotifications::new(notifications_log))
+                    } else {
+                        let port = std::env::var("SMTP_PORT").ok().and_then(|s| s.parse().ok());
+                        let username =
+                            std::env::var("SMTP_USERNAME").ok().filter(|s| !s.is_empty());
+                        let password =
+                            std::env::var("SMTP_PASSWORD").ok().filter(|s| !s.is_empty());
+                        let tls = std::env::var("SMTP_TLS").unwrap_or_else(|_| "starttls".into());
+                        match crate::notifications::SmtpNotifications::new(
+                            &host,
+                            port,
+                            username,
+                            password,
+                            &tls,
+                            email_from.clone(),
+                        ) {
+                            Ok(sink) => {
+                                tracing::info!(%host, from = %email_from, "notifications: SMTP");
+                                Arc::new(sink)
+                            }
+                            Err(e) => {
+                                tracing::error!(error = %e, "SMTP transport build failed; using stub");
+                                Arc::new(StubNotifications::new(notifications_log))
+                            }
+                        }
+                    }
+                }
+                _ => Arc::new(StubNotifications::new(notifications_log)),
+            };
 
         // Blob backend: `local` (filesystem, dev) or `s3` (SSE-KMS, required
         // on Fargate where task disk is ephemeral and not shared blue/green).
@@ -196,12 +268,43 @@ impl AppState {
         };
         let transformers: Arc<Vec<Box<dyn Transformer>>> = Arc::new(default_pipeline());
 
+        let rp_id = std::env::var("WEBAUTHN_RP_ID").unwrap_or_else(|_| "localhost".into());
+        // WEBAUTHN_RP_ORIGIN is comma-separated: the first is primary, the rest are
+        // additional allowed origins. This lets one deployment accept, e.g., the
+        // Vite dev server on :5173 alongside the API on :8080 — the passkey origin
+        // must match the page the ceremony runs from, and in dev they differ.
+        let rp_origin =
+            std::env::var("WEBAUTHN_RP_ORIGIN").unwrap_or_else(|_| "http://localhost:8080".into());
+        let origin_urls: Vec<Url> = rp_origin
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                Url::parse(s).map_err(|e| anyhow::anyhow!("WEBAUTHN_RP_ORIGIN '{s}' invalid: {e}"))
+            })
+            .collect::<anyhow::Result<_>>()?;
+        let (primary, extra) = origin_urls
+            .split_first()
+            .ok_or_else(|| anyhow::anyhow!("WEBAUTHN_RP_ORIGIN is empty"))?;
+        let mut builder = WebauthnBuilder::new(&rp_id, primary)
+            .map_err(|e| anyhow::anyhow!("WebauthnBuilder: {e}"))?
+            .rp_name("Paschal");
+        for url in extra {
+            builder = builder.append_allowed_origin(url);
+        }
+        let webauthn = Arc::new(
+            builder
+                .build()
+                .map_err(|e| anyhow::anyhow!("Webauthn build: {e}"))?,
+        );
+
         Ok(Self {
             pool,
             kms,
             blob_store,
             transformers,
             notifications,
+            webauthn,
             metrics: Arc::new(crate::metrics::Metrics::new()),
             config: Arc::new(config),
         })

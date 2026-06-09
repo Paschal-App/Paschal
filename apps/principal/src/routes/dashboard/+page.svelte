@@ -1,12 +1,14 @@
 <script lang="ts">
   import { base } from '$app/paths';
-  import { listVaults, getSubscription, heartbeat, listBuddies, getUsage, getBankSignalStatus, enrolBankSignal, revokeBankSignal, ApiError, type Usage, type BankSignalStatus } from '$lib/api';
+  import { listVaults, getSubscription, heartbeat, listBuddies, getUsage, getBankSignalStatus, enrolBankSignal, revokeBankSignal, getDuress, armDuress, revokeDuress, ApiError, type Usage, type BankSignalStatus, type DuressStatus } from '$lib/api';
   import { fmtDate, fmtRelative, fmtBytes } from '$lib/format';
   import type { Vault, Subscription, Buddy } from '$lib/types';
   import Card from '$lib/components/Card.svelte';
   import Button from '$lib/components/Button.svelte';
   import Banner from '$lib/components/Banner.svelte';
   import StatusBadge from '$lib/components/StatusBadge.svelte';
+  import Field from '$lib/components/Field.svelte';
+  import GettingStarted from '$lib/components/GettingStarted.svelte';
 
   let vaults = $state<Vault[]>([]);
   let subscription = $state<Subscription | null>(null);
@@ -19,6 +21,9 @@
   let beatedAt = $state<string | null>(null);
   let bankAction = $state<string | null>(null);
   let copied = $state(false);
+  let duress = $state<DuressStatus | null>(null);
+  let duressEmail = $state('');
+  let duressAction = $state<string | null>(null);
 
   async function load() {
     loading = true;
@@ -35,6 +40,7 @@
       buddies = b;
       usage = u;
       bankSignal = await getBankSignalStatus().catch(() => null);
+      duress = await getDuress().catch(() => null);
     } catch (e) {
       error = e instanceof ApiError ? e.problem.detail || e.problem.title : String(e);
     } finally {
@@ -70,6 +76,30 @@
     await navigator.clipboard.writeText(url);
     copied = true;
     setTimeout(() => { copied = false; }, 2000);
+  }
+
+  async function armDuressHandler() {
+    duressAction = 'arm';
+    try {
+      duress = await armDuress(duressEmail);
+    } catch (e) {
+      error = e instanceof ApiError ? e.problem.detail || e.problem.title : String(e);
+    } finally {
+      duressAction = null;
+    }
+  }
+
+  async function disarmDuressHandler() {
+    if (!confirm('Disarm the duress signal? The panic URL stops working until you arm it again.')) return;
+    duressAction = 'disarm';
+    try {
+      await revokeDuress();
+      duress = null;
+    } catch (e) {
+      error = e instanceof ApiError ? e.problem.detail || e.problem.title : String(e);
+    } finally {
+      duressAction = null;
+    }
   }
 
   async function sendHeartbeat() {
@@ -127,6 +157,8 @@
   {#if error}
     <Banner kind="warn">{error}</Banner>
   {/if}
+
+  <GettingStarted {vaults} {buddies} {bankSignal} {loading} />
 
   <Card eyebrow="SUBSCRIPTION" title={subscription?.state ?? '…'}>
     <p class="dim">{subDescription}</p>
@@ -259,7 +291,7 @@
     {/if}
   </Card>
 
-  <Card eyebrow="SIGNALS" title="Proof-of-life">
+  <Card eyebrow="SIGNALS" title="Proof-of-life" id="signals">
     {#snippet children()}
       {#if bankSignal}
         <div class="signal-row">
@@ -293,6 +325,59 @@
           Generates a private webhook URL. Paste it into YNAB, your bank's automation,
           or an Apple Shortcut — any HTTP POST counts as proof of activity.
         </p>
+      {/if}
+    {/snippet}
+  </Card>
+
+  <Card eyebrow="DURESS" title="Panic signal" id="duress">
+    {#snippet children()}
+      {#if duress?.armed}
+        {#if duress.triggered_at}
+          <Banner kind="warn">
+            Duress is active — every Vault's release is frozen and your contact was alerted.
+            Disarm once you are safe to resume normal operation.
+          </Banner>
+        {/if}
+        <p class="dim small">
+          A private URL is armed. A POST to it — from a gift-card purchase or any action you can
+          take under coercion — silently freezes all releases and alerts your contact. Nothing
+          visible changes on your device.
+        </p>
+        <label class="url-label">Your private duress URL</label>
+        <div class="webhook-row">
+          <code class="mono small">{duress.webhook_url}</code>
+          <button type="button" class="copy-btn" onclick={() => copyWebhookUrl(duress!.webhook_url!)}>
+            {copied ? 'Copied!' : 'Copy'}
+          </button>
+        </div>
+        <details class="how-to">
+          <summary>Connect it to a gift-card purchase</summary>
+          <ol class="steps">
+            <li>Pick a specific, plausible action — e.g. buying a $50 gift card of a set brand.</li>
+            <li>Wire it to a POST to this URL: an Apple Shortcut on the store app's notification, or a Zapier / Make rule on that transaction.</li>
+            <li>Under coercion, perform the action. The dead-man's switch freezes and your contact is alerted — quietly.</li>
+          </ol>
+        </details>
+        <button type="button" class="text-link revoke-link" onclick={disarmDuressHandler} disabled={duressAction !== null}>
+          Disarm duress signal
+        </button>
+      {:else}
+        <p class="dim">No duress signal armed.</p>
+        <p class="dim small" style="margin-bottom: var(--sp-2)">
+          A covert panic switch. Arm a private URL and connect it to an action you can take under
+          coercion (a set gift-card purchase). Triggering it silently <strong>freezes every Vault's
+          release</strong> — so a captor can't force letters out — and discreetly alerts a contact.
+        </p>
+        <Field
+          bind:value={duressEmail}
+          label="Alert this contact (optional)"
+          name="duress_email"
+          placeholder="trusted@example.com"
+          help="They get a discreet wellbeing-check message when you trigger duress."
+        />
+        <Button onclick={armDuressHandler} disabled={duressAction !== null}>
+          {duressAction === 'arm' ? 'Arming…' : 'Arm duress signal'}
+        </Button>
       {/if}
     {/snippet}
   </Card>
@@ -368,4 +453,23 @@
   .text-link:disabled { opacity: 0.5; cursor: not-allowed; }
   .revoke-link { margin-top: var(--sp-1); }
   .small { font-size: var(--size-caption); }
+
+  .url-label { font-size: var(--size-caption); color: var(--slate); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 4px; display: block; }
+  .how-to {
+    margin-top: var(--sp-2);
+    border: var(--rule);
+    padding: var(--sp-2);
+    font-size: var(--size-body-2);
+  }
+  .how-to summary {
+    cursor: pointer;
+    font-weight: 600;
+    color: var(--ink);
+    list-style: none;
+  }
+  .how-to summary::before { content: '▶ '; font-size: 10px; }
+  .how-to[open] summary::before { content: '▼ '; }
+  .steps { padding-left: var(--sp-3); margin: var(--sp-2) 0 0; display: flex; flex-direction: column; gap: var(--sp-1); }
+  .steps li { color: var(--slate); line-height: 1.5; }
+  .steps code { font-family: var(--font-mono, monospace); font-size: 0.9em; background: var(--mist); padding: 1px 4px; }
 </style>

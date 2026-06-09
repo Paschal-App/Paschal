@@ -107,3 +107,52 @@ export class ApiError extends Error {
     this.name = 'ApiError';
   }
 }
+
+export interface PasskeyInfo {
+  id: string;
+  name: string;
+  backed_up: boolean;
+  transports: string[];
+  created_at: string;
+  last_used_at: string | null;
+}
+
+export interface ZkEnvelopeView {
+  passkey_id: string;
+  ciphertext: string;
+  nonce: string;
+  created_at: string;
+}
+
+export interface ZkEnvelopePayload {
+  passkey_id: string;
+  ciphertext: string;
+  nonce: string;
+  recovery_ciphertext?: string;
+  recovery_nonce?: string;
+  recovery_salt?: string;
+}
+
+export interface PasskeyRegisterOptionsResp {
+  challenge_id: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  options: any;
+}
+
+export interface PasskeyAuthOptionsResp {
+  challenge_id: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  options: any;
+}
+
+export interface PasskeyRegisterVerifyResp {
+  principal_id: string;
+  session_token: string;
+  /** Present only for the first passkey on an account (shown once). */
+  recovery_code?: string;
+}
+
+export interface PasskeyAuthVerifyResp {
+  principal_id: string;
+  session_token: string;
+}

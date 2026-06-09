@@ -13,6 +13,7 @@
     { href: `${base}/buddies`, label: 'Buddies' },
     { href: `${base}/co-stewards`, label: 'Co-Stewards' },
     { href: `${base}/account`, label: 'Account' },
+    { href: `${base}/transparency`, label: 'Transparency' },
     { href: `${base}/docs`, label: 'How it works' }
   ];
 

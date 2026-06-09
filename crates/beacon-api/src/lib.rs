@@ -5,6 +5,7 @@ pub mod auth;
 pub mod errors;
 pub mod metrics;
 pub mod notifications;
+pub mod passkey;
 pub mod rate_limit;
 pub mod routes;
 pub mod scheduler;

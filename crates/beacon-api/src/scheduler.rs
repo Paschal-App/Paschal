@@ -266,12 +266,21 @@ async fn aggregator_tick(state: &AppState) -> anyhow::Result<()> {
             );
 
             if new_state == VaultState::CoolingOff {
+                // Duress freeze: while the principal has a triggered covert
+                // duress signal, the dead-man's switch is paused — do not open
+                // cooling-off. The aggregator re-evaluates every tick, so release
+                // resumes naturally once they disarm. This stops a coercer from
+                // forcing a release during a duress event (and stops the
+                // principal's duress-induced silence being read as death).
+                if db::principal_in_duress(&state.pool, vault.principal_id).await? {
+                    tracing::info!(vault_id = %vault.id, "duress active; release frozen");
+                }
                 // Enter cooling-off atomically from the observed prior state so
                 // the side effects (notification + release event) fire exactly
                 // once even if two schedulers briefly overlap during failover.
                 // The release itself is fired later by the release-elapse poll
                 // loop once the durable deadline elapses — no in-memory timer.
-                if db::claim_vault_cooling_off(&state.pool, vault.id, vault.state).await? {
+                else if db::claim_vault_cooling_off(&state.pool, vault.id, vault.state).await? {
                     let _ = db::append_transparency_entry(
                         &state.pool,
                         "TRIGGER_COOLING_OFF",

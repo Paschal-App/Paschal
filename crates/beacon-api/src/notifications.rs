@@ -105,6 +105,163 @@ impl NotificationSink for StubNotifications {
     }
 }
 
+/// Email sink backed by the [Resend](https://resend.com) HTTP API.
+///
+/// Email only — SMS/voice need their own providers, so those channels are logged
+/// and dropped here rather than silently lost. Sends are fire-and-forget per the
+/// trait, but a failure is logged at ERROR: a release or invite email that never
+/// goes out means a recipient never got their letter, so it must be loud.
+pub struct ResendNotifications {
+    api_key: String,
+    from: String,
+    client: reqwest::Client,
+}
+
+impl ResendNotifications {
+    pub fn new(api_key: String, from: String) -> Self {
+        Self {
+            api_key,
+            from,
+            client: reqwest::Client::new(),
+        }
+    }
+
+    /// Build the Resend `POST /emails` JSON body. Separated so the field mapping
+    /// is unit-testable without a network round-trip.
+    fn payload(&self, msg: &OutboundMessage) -> serde_json::Value {
+        serde_json::json!({
+            "from": self.from,
+            "to": [msg.to],
+            "subject": msg.subject.clone().unwrap_or_default(),
+            "text": msg.body,
+        })
+    }
+}
+
+#[async_trait]
+impl NotificationSink for ResendNotifications {
+    async fn send(&self, msg: OutboundMessage) {
+        if !matches!(msg.channel, Channel::Email) {
+            tracing::warn!(
+                channel = %msg.channel.as_str(),
+                to = %msg.to,
+                "notification channel not supported by Resend; dropped"
+            );
+            return;
+        }
+        let payload = self.payload(&msg);
+        match self
+            .client
+            .post("https://api.resend.com/emails")
+            .bearer_auth(&self.api_key)
+            .json(&payload)
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => {
+                tracing::info!(to = %msg.to, "email sent via Resend");
+            }
+            Ok(resp) => {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                tracing::error!(%status, to = %msg.to, body = %body, "Resend send FAILED");
+            }
+            Err(e) => {
+                tracing::error!(error = %e, to = %msg.to, "Resend request error");
+            }
+        }
+    }
+}
+
+/// Self-hosted email sink backed by an SMTP relay — any mail server you run or
+/// have submission credentials for. Email only, like Resend; other channels are
+/// logged and dropped. Sends are fire-and-forget; a failure is logged at ERROR.
+pub struct SmtpNotifications {
+    transport: lettre::AsyncSmtpTransport<lettre::Tokio1Executor>,
+    from: String,
+}
+
+impl SmtpNotifications {
+    /// Build an SMTP sink. `tls` selects connection security:
+    ///   "starttls" (default, submission port 587),
+    ///   "implicit" (TLS-on-connect, port 465),
+    ///   "none"     (unencrypted, e.g. a trusted local relay on port 25).
+    /// Credentials are optional — omit both for an unauthenticated local relay.
+    pub fn new(
+        host: &str,
+        port: Option<u16>,
+        username: Option<String>,
+        password: Option<String>,
+        tls: &str,
+        from: String,
+    ) -> anyhow::Result<Self> {
+        use lettre::transport::smtp::authentication::Credentials;
+        use lettre::{AsyncSmtpTransport, Tokio1Executor};
+
+        let mut builder = match tls {
+            "implicit" => AsyncSmtpTransport::<Tokio1Executor>::relay(host)?,
+            "none" => AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(host),
+            _ => AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host)?,
+        };
+        if let Some(p) = port {
+            builder = builder.port(p);
+        }
+        if let (Some(u), Some(pw)) = (username, password) {
+            builder = builder.credentials(Credentials::new(u, pw));
+        }
+        Ok(Self {
+            transport: builder.build(),
+            from,
+        })
+    }
+}
+
+#[async_trait]
+impl NotificationSink for SmtpNotifications {
+    async fn send(&self, msg: OutboundMessage) {
+        use lettre::AsyncTransport;
+        if !matches!(msg.channel, Channel::Email) {
+            tracing::warn!(
+                channel = %msg.channel.as_str(),
+                to = %msg.to,
+                "notification channel not supported by SMTP; dropped"
+            );
+            return;
+        }
+        let from = match self.from.parse::<lettre::message::Mailbox>() {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::error!(error = %e, from = %self.from, "SMTP: invalid EMAIL_FROM address");
+                return;
+            }
+        };
+        let to = match msg.to.parse::<lettre::message::Mailbox>() {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::error!(error = %e, to = %msg.to, "SMTP: invalid recipient address");
+                return;
+            }
+        };
+        let email = match lettre::Message::builder()
+            .from(from)
+            .to(to)
+            .subject(msg.subject.clone().unwrap_or_default())
+            .header(lettre::message::header::ContentType::TEXT_PLAIN)
+            .body(msg.body.clone())
+        {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::error!(error = %e, "SMTP: failed to build message");
+                return;
+            }
+        };
+        match self.transport.send(email).await {
+            Ok(_) => tracing::info!(to = %msg.to, "email sent via SMTP"),
+            Err(e) => tracing::error!(error = %e, to = %msg.to, "SMTP send FAILED"),
+        }
+    }
+}
+
 /// Convenience helpers for sending the standard message shapes.
 pub mod tx {
     use super::*;
@@ -234,6 +391,31 @@ pub mod tx {
         .await;
     }
 
+    /// Sent at letter-creation for the split heir mode: the recipient's half of
+    /// the key. The operator never STORES this half (only the other half is in
+    /// the DB), so split mode is zero-knowledge AT REST. Honest caveat (ZK audit
+    /// H2): the share still transits this email path, so its in-transit
+    /// confidentiality depends on the mail channel — for the strongest posture
+    /// use `manual` mode, where the passphrase never reaches Paschal at all. We
+    /// deliberately don't name the sender (the recipient learns who at release).
+    pub async fn heir_share(sink: &dyn NotificationSink, recipient_email: &str, share_code: &str) {
+        sink.send(OutboundMessage {
+            channel: Channel::Email,
+            to: recipient_email.into(),
+            subject: Some("You've been named in a Paschal letter".into()),
+            body: format!(
+                "Someone has written you a letter through Paschal, to be delivered to \
+                 you at some point in the future.\n\n\
+                 Keep this recovery code somewhere safe — you'll need it to open the \
+                 letter if and when it is delivered to you:\n\n    {share_code}\n\n\
+                 There's nothing to do now. If the letter is ever released you'll get a \
+                 link, and this code will open it. We cannot recover this code for you, \
+                 and we cannot read the letter."
+            ),
+        })
+        .await;
+    }
+
     /// Sent when a Co-Steward requests a change to where a deceased
     /// principal's Letter is delivered. Goes to the *current* (old) recipient
     /// address so a redirect cannot happen silently, and the change takes
@@ -283,5 +465,68 @@ pub mod tx {
             ),
         })
         .await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resend_payload_maps_message_fields() {
+        let sink =
+            ResendNotifications::new("re_test_key".into(), "Paschal <noreply@example.com>".into());
+        let msg = OutboundMessage {
+            channel: Channel::Email,
+            to: "heir@example.org".into(),
+            subject: Some("A letter is waiting for you".into()),
+            body: "Open it: https://vault.example.com/claim?token=abc".into(),
+        };
+        let p = sink.payload(&msg);
+        assert_eq!(p["from"], "Paschal <noreply@example.com>");
+        assert_eq!(p["to"][0], "heir@example.org");
+        assert_eq!(p["subject"], "A letter is waiting for you");
+        assert_eq!(p["text"], "Open it: https://vault.example.com/claim?token=abc");
+    }
+
+    #[test]
+    fn resend_payload_defaults_missing_subject_to_empty() {
+        let sink = ResendNotifications::new("re".into(), "x@example.com".into());
+        let msg = OutboundMessage {
+            channel: Channel::Email,
+            to: "a@b.com".into(),
+            subject: None,
+            body: "hi".into(),
+        };
+        assert_eq!(sink.payload(&msg)["subject"], "");
+    }
+
+    #[test]
+    fn smtp_sink_builds_for_each_tls_mode() {
+        for tls in ["starttls", "implicit", "none"] {
+            let sink = SmtpNotifications::new(
+                "smtp.example.com",
+                Some(587),
+                Some("user".into()),
+                Some("pass".into()),
+                tls,
+                "Paschal <noreply@example.com>".into(),
+            );
+            assert!(sink.is_ok(), "SMTP sink should build for tls={tls}");
+        }
+    }
+
+    #[test]
+    fn smtp_sink_builds_without_credentials() {
+        // Unauthenticated local relay: no username/password.
+        let sink = SmtpNotifications::new(
+            "localhost",
+            Some(25),
+            None,
+            None,
+            "none",
+            "Paschal <noreply@localhost>".into(),
+        );
+        assert!(sink.is_ok());
     }
 }

@@ -15,7 +15,14 @@ import {
   type ProblemDetails,
   type SignupResp,
   type Subscription,
-  type Vault
+  type Vault,
+  type PasskeyRegisterOptionsResp,
+  type PasskeyAuthOptionsResp,
+  type PasskeyRegisterVerifyResp,
+  type PasskeyAuthVerifyResp,
+  type PasskeyInfo,
+  type ZkEnvelopePayload,
+  type ZkEnvelopeView
 } from './types';
 
 const BASE = ''; // Same-origin: the frontend is served by the Beacon (or via Vite proxy in dev).
@@ -117,12 +124,13 @@ export function getVault(id: string) {
 
 export function createVault(args: {
   name: string;
+  tier?: 'HONEST_OPERATOR' | 'ZERO_KNOWLEDGE';
   cooling_off_seconds?: number;
   storage_region?: string;
 }) {
   return request<Vault>('/v1/vaults', {
     method: 'POST',
-    body: JSON.stringify({ ...args, tier: 'HONEST_OPERATOR' })
+    body: JSON.stringify({ tier: 'HONEST_OPERATOR', ...args })
   });
 }
 
@@ -463,6 +471,54 @@ export function revokeBankSignal() {
 }
 
 // ---------------------------------------------------------------------------
+// Duress signal — covert panic webhook that freezes release
+// ---------------------------------------------------------------------------
+
+export interface DuressStatus {
+  armed: boolean;
+  triggered_at: string | null;
+  webhook_url: string | null;
+  alert_email: string | null;
+}
+
+export function getDuress() {
+  return request<DuressStatus>('/v1/principals/me/duress');
+}
+
+export function armDuress(alertEmail?: string) {
+  return request<DuressStatus>('/v1/principals/me/duress', {
+    method: 'POST',
+    body: JSON.stringify({ alert_email: alertEmail?.trim() || null })
+  });
+}
+
+export function revokeDuress() {
+  return request<void>('/v1/principals/me/duress', { method: 'DELETE' });
+}
+
+// ---------------------------------------------------------------------------
+// Public trust (warrant canary + transparency log) — no auth required
+// ---------------------------------------------------------------------------
+
+export function getWarrantCanary() {
+  return request<{ statement: string; issued_at: string; next_update_by: string }>(
+    '/v1/public/warrant-canary',
+    { auth: false }
+  );
+}
+
+export interface TransparencyEntry {
+  id: string;
+  kind: string;
+  ts: string;
+  payload: unknown;
+}
+
+export function getTransparencyLog() {
+  return request<TransparencyEntry[]>('/v1/public/transparency-log', { auth: false });
+}
+
+// ---------------------------------------------------------------------------
 // Re-exports so consumers don't have to import from two paths.
 // ---------------------------------------------------------------------------
 
@@ -479,3 +535,202 @@ export type {
   VaultState,
   Tier
 } from './types';
+
+// --- Passwordless sign-in -------------------------------------------------
+export function signin(email: string) {
+  return request<{ principal_id: string; session_token: string }>('/v1/auth/signin', {
+    method: 'POST',
+    auth: false,
+    body: JSON.stringify({ email })
+  });
+}
+
+// Zero-Knowledge letters (browser-encrypted; operator stores ciphertext only)
+// ---------------------------------------------------------------------------
+
+/** Seal a browser-encrypted Letter into a Private Vault. `ciphertext`/`nonce`
+ *  are base64url of the AES-256-GCM output produced under the vault DEK. */
+export function sealZkLetter(vaultId: string, args: {
+  title: string;
+  recipient_email: string;
+  ciphertext: string;
+  nonce: string;
+  kind?: string;
+  category?: string;
+  release_mode?: string;
+  scheduled_release_at?: string;
+  // Optional heir envelope (body sealed under a key the recipient can obtain).
+  heir_ciphertext?: string;
+  heir_nonce?: string;
+  heir_mode?: 'manual' | 'split' | 'operator';
+  heir_salt?: string; // manual mode
+  heir_release_secret?: string; // split: operator share; operator: the key
+  heir_recipient_share?: string; // split: emailed to recipient, never stored
+}) {
+  return request<Letter>(
+    `/v1/vaults/${encodeURIComponent(vaultId)}/letters/zk`,
+    { method: 'POST', body: JSON.stringify(args) }
+  );
+}
+
+/** Fetch a Private Letter's stored ciphertext for in-browser decryption. */
+export function getZkLetterCiphertext(vaultId: string, letterId: string) {
+  return request<{ ciphertext: string; nonce: string }>(
+    `/v1/vaults/${encodeURIComponent(vaultId)}/letters/${encodeURIComponent(letterId)}/ciphertext`
+  );
+}
+
+// ---------------------------------------------------------------------------
+
+// Passkeys — auth ceremonies (unauthenticated)
+// ---------------------------------------------------------------------------
+
+export function getPasskeyRegisterOptions(
+  email: string,
+  plan?: string,
+  tos_accepted?: boolean
+) {
+  return request<PasskeyRegisterOptionsResp>('/v1/auth/passkey/register/options', {
+    method: 'POST',
+    body: JSON.stringify({ email, plan, tos_accepted }),
+    auth: false
+  });
+}
+
+export function verifyPasskeyRegistration(body: {
+  challenge_id: string;
+  credential: unknown;
+  name?: string;
+}) {
+  return request<PasskeyRegisterVerifyResp>('/v1/auth/passkey/register/verify', {
+    method: 'POST',
+    body: JSON.stringify(body),
+    auth: false
+  });
+}
+
+export function getPasskeyAuthOptions(email: string) {
+  return request<PasskeyAuthOptionsResp>('/v1/auth/passkey/authenticate/options', {
+    method: 'POST',
+    body: JSON.stringify({ email }),
+    auth: false
+  });
+}
+
+export function verifyPasskeyAuthentication(body: {
+  challenge_id: string;
+  assertion: unknown;
+}) {
+  return request<PasskeyAuthVerifyResp>('/v1/auth/passkey/authenticate/verify', {
+    method: 'POST',
+    body: JSON.stringify(body),
+    auth: false
+  });
+}
+
+export function validateRecoveryCode(email: string, code: string) {
+  return request<{ code_salt: string }>('/v1/auth/passkey/recovery/validate', {
+    method: 'POST',
+    body: JSON.stringify({ email, code }),
+    auth: false
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Recovery Key (PRK) — store/get + per-vault envelope + recovery redemption
+// ---------------------------------------------------------------------------
+
+export function storeRecoveryKey(body: {
+  code_salt: string; // hex PBKDF2 salt
+  prk_code_ct: string; // base64url
+  prk_code_nonce: string;
+  prk_prf_ct: string;
+  prk_prf_nonce: string;
+}) {
+  return request<void>('/v1/principals/me/recovery-key', {
+    method: 'POST',
+    body: JSON.stringify(body)
+  });
+}
+
+export function getRecoveryKey() {
+  return request<{ configured: boolean; prk_prf_ct?: string; prk_prf_nonce?: string }>(
+    '/v1/principals/me/recovery-key'
+  );
+}
+
+export function storeVaultPrkEnvelope(
+  vaultId: string,
+  body: { ciphertext: string; nonce: string }
+) {
+  return request<void>(`/v1/vaults/${encodeURIComponent(vaultId)}/prk-envelope`, {
+    method: 'POST',
+    body: JSON.stringify(body)
+  });
+}
+
+export function getVaultPrkEnvelope(vaultId: string) {
+  return request<{ ciphertext: string; nonce: string }>(
+    `/v1/vaults/${encodeURIComponent(vaultId)}/prk-envelope`
+  );
+}
+
+export interface RecoveryBundleLetter {
+  id: string;
+  title: string;
+  recipient_email: string;
+  ciphertext: string;
+  nonce: string;
+}
+
+export interface RecoveryBundleVault {
+  vault_id: string;
+  name: string;
+  dek_prk_ct: string;
+  dek_prk_nonce: string;
+  letters: RecoveryBundleLetter[];
+}
+
+export interface RecoveryBundle {
+  code_salt: string; // hex
+  prk_code_ct: string; // base64url
+  prk_code_nonce: string;
+  vaults: RecoveryBundleVault[];
+}
+
+export function recoveryRedeem(email: string, code: string) {
+  return request<RecoveryBundle>('/v1/auth/passkey/recovery/redeem', {
+    method: 'POST',
+    auth: false,
+    body: JSON.stringify({ email, code })
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Passkeys — management (authenticated)
+// ---------------------------------------------------------------------------
+
+export function listPasskeys() {
+  return request<PasskeyInfo[]>('/v1/principals/me/passkeys');
+}
+
+export function deletePasskey(id: string) {
+  return request<void>(`/v1/principals/me/passkeys/${id}`, { method: 'DELETE' });
+}
+
+// ---------------------------------------------------------------------------
+// ZK envelopes (authenticated)
+// ---------------------------------------------------------------------------
+
+export function storeZkEnvelope(vaultId: string, body: ZkEnvelopePayload) {
+  return request<void>(`/v1/vaults/${vaultId}/zk-envelope`, {
+    method: 'POST',
+    body: JSON.stringify(body)
+  });
+}
+
+export function getZkEnvelopes(vaultId: string) {
+  return request<ZkEnvelopeView[]>(`/v1/vaults/${vaultId}/zk-envelope`);
+}
+
+// ---------------------------------------------------------------------------
