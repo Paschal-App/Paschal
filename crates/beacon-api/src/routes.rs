@@ -3436,3 +3436,150 @@ pub async fn get_zk_letter_ciphertext(
         nonce: URL_SAFE_NO_PAD.encode(&letter.nonce),
     }))
 }
+
+// ----------------------------------------------------------------------------
+// Vault settings + Letter edit/delete
+// ----------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct UpdateVaultReq {
+    pub name: String,
+    /// Cooling-off window in seconds. Min 3600 (1 hour).
+    #[serde(default)]
+    pub cooling_off_seconds: Option<i32>,
+}
+
+pub async fn update_vault(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(vault_id): Path<Uuid>,
+    Json(body): Json<UpdateVaultReq>,
+) -> ApiResult<Json<VaultView>> {
+    let pid = current_principal(&state, &headers).await?;
+    let vault = db::fetch_vault(&state.pool, VaultId(vault_id)).await?;
+    if vault.principal_id != pid {
+        return Err(ApiError::NotFound);
+    }
+    if vault.state == VaultState::Released {
+        return Err(ApiError::Conflict("Cannot edit a released Vault".into()));
+    }
+    let name = body.name.trim();
+    if name.is_empty() {
+        return Err(ApiError::BadRequest("name cannot be empty".into()));
+    }
+    let cooling_off_seconds = body
+        .cooling_off_seconds
+        .unwrap_or(vault.cooling_off_seconds);
+    if cooling_off_seconds < 3600 {
+        return Err(ApiError::BadRequest(
+            "cooling_off_seconds must be at least 3600 (1 hour)".into(),
+        ));
+    }
+    let updated =
+        db::update_vault(&state.pool, VaultId(vault_id), name, cooling_off_seconds).await?;
+    Ok(Json(vault_view(&updated)))
+}
+
+pub async fn get_letter(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((vault_id, letter_id)): Path<(Uuid, Uuid)>,
+) -> ApiResult<Json<LetterMetaView>> {
+    let pid = current_principal(&state, &headers).await?;
+    let vault = db::fetch_vault(&state.pool, VaultId(vault_id)).await?;
+    if vault.principal_id != pid {
+        return Err(ApiError::NotFound);
+    }
+    let letter = db::fetch_letter_meta(&state.pool, LetterId(letter_id)).await?;
+    if letter.vault_id != VaultId(vault_id) {
+        return Err(ApiError::NotFound);
+    }
+    Ok(Json(LetterMetaView {
+        id: letter.id,
+        title: letter.title,
+        recipient_email: letter.recipient_email,
+        sealed_at: letter.sealed_at.to_rfc3339(),
+        scheduled_release_at: None,
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct UpdateLetterReq {
+    pub title: String,
+    pub recipient_email: String,
+    #[serde(default)]
+    pub scheduled_release_at: Option<chrono::DateTime<Utc>>,
+    #[serde(default)]
+    pub release_mode: Option<String>,
+    #[serde(default)]
+    pub kind: Option<String>,
+}
+
+pub async fn update_letter(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((vault_id, letter_id)): Path<(Uuid, Uuid)>,
+    Json(body): Json<UpdateLetterReq>,
+) -> ApiResult<Json<LetterMetaView>> {
+    let pid = current_principal(&state, &headers).await?;
+    let vault = db::fetch_vault(&state.pool, VaultId(vault_id)).await?;
+    if vault.principal_id != pid {
+        return Err(ApiError::NotFound);
+    }
+    let existing = db::fetch_letter_meta(&state.pool, LetterId(letter_id)).await?;
+    if existing.vault_id != VaultId(vault_id) {
+        return Err(ApiError::NotFound);
+    }
+    let release_mode = body
+        .release_mode
+        .as_deref()
+        .unwrap_or("SIGNAL_OR_SCHEDULED");
+    let kind = body.kind.as_deref().unwrap_or("MESSAGE");
+    validate_letter_kind(Some(kind))?;
+    validate_release_mode(Some(release_mode), body.scheduled_release_at.as_ref())?;
+    if !body.recipient_email.contains('@') {
+        return Err(ApiError::BadRequest("recipient_email looks invalid".into()));
+    }
+    let letter = db::update_letter_meta(
+        &state.pool,
+        LetterId(letter_id),
+        &body.title,
+        &body.recipient_email,
+        body.scheduled_release_at,
+        release_mode,
+        kind,
+    )
+    .await?;
+    Ok(Json(LetterMetaView {
+        id: letter.id,
+        title: letter.title,
+        recipient_email: letter.recipient_email,
+        sealed_at: letter.sealed_at.to_rfc3339(),
+        scheduled_release_at: body.scheduled_release_at.map(|t| t.to_rfc3339()),
+    }))
+}
+
+pub async fn delete_letter_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((vault_id, letter_id)): Path<(Uuid, Uuid)>,
+) -> ApiResult<StatusCode> {
+    let pid = current_principal(&state, &headers).await?;
+    let vault = db::fetch_vault(&state.pool, VaultId(vault_id)).await?;
+    if vault.principal_id != pid {
+        return Err(ApiError::NotFound);
+    }
+    let existing = db::fetch_letter_meta(&state.pool, LetterId(letter_id)).await?;
+    if existing.vault_id != VaultId(vault_id) {
+        return Err(ApiError::NotFound);
+    }
+    // Delete attachments from the blob store first (safe: blob gone, then row).
+    let attachments = db::list_attachments(&state.pool, LetterId(letter_id)).await?;
+    for att in attachments {
+        if let Some(key) = db::purge_attachment(&state.pool, att.id).await? {
+            let _ = state.blob_store.delete(&key).await;
+        }
+    }
+    db::delete_letter(&state.pool, LetterId(letter_id)).await?;
+    Ok(StatusCode::NO_CONTENT)
+}

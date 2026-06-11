@@ -141,6 +141,51 @@ export function moveVaultRegion(vaultId: string, storageRegion: string) {
   );
 }
 
+export function updateVault(vaultId: string, args: { name: string; cooling_off_seconds?: number }) {
+  return request<Vault>(`/v1/vaults/${encodeURIComponent(vaultId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(args)
+  });
+}
+
+export interface LetterMetaResp {
+  id: string;
+  title: string;
+  recipient_email: string;
+  sealed_at: string;
+  scheduled_release_at: string | null;
+}
+
+export function getLetter(vaultId: string, letterId: string) {
+  return request<LetterMetaResp>(
+    `/v1/vaults/${encodeURIComponent(vaultId)}/letters/${encodeURIComponent(letterId)}`
+  );
+}
+
+export function updateLetter(
+  vaultId: string,
+  letterId: string,
+  args: {
+    title: string;
+    recipient_email: string;
+    scheduled_release_at?: string | null;
+    release_mode?: string;
+    kind?: string;
+  }
+) {
+  return request<LetterMetaResp>(
+    `/v1/vaults/${encodeURIComponent(vaultId)}/letters/${encodeURIComponent(letterId)}`,
+    { method: 'PATCH', body: JSON.stringify(args) }
+  );
+}
+
+export function deleteLetter(vaultId: string, letterId: string) {
+  return request<void>(
+    `/v1/vaults/${encodeURIComponent(vaultId)}/letters/${encodeURIComponent(letterId)}`,
+    { method: 'DELETE' }
+  );
+}
+
 export function forceRelease(vaultId: string) {
   return request<{ release_event_id: string; cooling_off_ends_at: string }>(
     `/v1/vaults/${encodeURIComponent(vaultId)}/force-release`,

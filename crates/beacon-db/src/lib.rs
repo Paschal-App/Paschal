@@ -1038,6 +1038,68 @@ pub async fn fetch_letter_meta(pool: &PgPool, letter_id: LetterId) -> Result<Let
     })
 }
 
+pub async fn update_vault(
+    pool: &PgPool,
+    vault_id: VaultId,
+    name: &str,
+    cooling_off_seconds: i32,
+) -> Result<Vault, DbError> {
+    let row = sqlx::query(
+        "UPDATE vault SET name = $1, cooling_off_seconds = $2
+          WHERE id = $3
+        RETURNING id, principal_id, name, tier, state, cooling_off_seconds, storage_region,
+                  last_attestation_at, cooling_off_started_at, released_at, created_at",
+    )
+    .bind(name)
+    .bind(cooling_off_seconds)
+    .bind(vault_id.as_uuid())
+    .fetch_one(pool)
+    .await?;
+    row_to_vault(&row)
+}
+
+pub async fn update_letter_meta(
+    pool: &PgPool,
+    letter_id: LetterId,
+    title: &str,
+    recipient_email: &str,
+    scheduled_release_at: Option<chrono::DateTime<chrono::Utc>>,
+    release_mode: &str,
+    kind: &str,
+) -> Result<LetterMeta, DbError> {
+    let row = sqlx::query(
+        "UPDATE letter
+         SET title = $1, recipient_email = $2,
+             scheduled_release_at = $3, release_mode = $4, kind = $5
+         WHERE id = $6
+         RETURNING id, vault_id, title, recipient_email, sealed_at",
+    )
+    .bind(title)
+    .bind(recipient_email)
+    .bind(scheduled_release_at)
+    .bind(release_mode)
+    .bind(kind)
+    .bind(letter_id.as_uuid())
+    .fetch_optional(pool)
+    .await?
+    .ok_or(DbError::NotFound)?;
+    Ok(LetterMeta {
+        id: LetterId(row.get("id")),
+        vault_id: VaultId(row.get("vault_id")),
+        title: row.get("title"),
+        recipient_email: row.get("recipient_email"),
+        sealed_at: row.get("sealed_at"),
+    })
+}
+
+pub async fn delete_letter(pool: &PgPool, letter_id: LetterId) -> Result<(), DbError> {
+    sqlx::query("DELETE FROM letter WHERE id = $1")
+        .bind(letter_id.as_uuid())
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 /// Atomically mark an EVENT_ON_DEMAND Letter as triggered. Returns `true` iff
 /// this caller won — a held event Letter fires exactly once even if two
 /// deputies tap "release" at the same moment.
