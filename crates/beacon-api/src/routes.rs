@@ -2830,6 +2830,8 @@ pub async fn list_transparency_log(
 #[derive(serde::Deserialize)]
 pub struct ArmDuressReq {
     pub alert_email: Option<String>,
+    /// "freeze" (default) or "release".
+    pub panic_mode: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -2838,6 +2840,7 @@ pub struct DuressView {
     pub triggered_at: Option<String>,
     pub webhook_url: Option<String>,
     pub alert_email: Option<String>,
+    pub panic_mode: String,
 }
 
 fn duress_view(state: &AppState, row: Option<db::DuressSignalRow>) -> DuressView {
@@ -2851,12 +2854,14 @@ fn duress_view(state: &AppState, row: Option<db::DuressSignalRow>) -> DuressView
                 r.webhook_id
             )),
             alert_email: r.alert_email,
+            panic_mode: r.panic_mode,
         },
         None => DuressView {
             armed: false,
             triggered_at: None,
             webhook_url: None,
             alert_email: None,
+            panic_mode: "freeze".into(),
         },
     }
 }
@@ -2877,7 +2882,17 @@ pub async fn arm_duress(
             return Err(ApiError::BadRequest("alert_email looks invalid".into()));
         }
     }
-    let row = db::arm_duress(&state.pool, pid, Uuid::new_v4(), alert_email).await?;
+    let panic_mode = body
+        .panic_mode
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("freeze");
+    if !matches!(panic_mode, "freeze" | "release") {
+        return Err(ApiError::BadRequest(
+            "panic_mode must be 'freeze' or 'release'".into(),
+        ));
+    }
+    let row = db::arm_duress(&state.pool, pid, Uuid::new_v4(), alert_email, panic_mode).await?;
     Ok(Json(duress_view(&state, Some(row))))
 }
 
@@ -2930,6 +2945,57 @@ pub async fn duress_webhook(
             None,
         )
         .await;
+
+        // "release" panic mode: start cooling-off on every watchable Vault
+        // immediately, so the principal's wishes are carried out without delay.
+        // (The default "freeze" mode is handled by the aggregator pausing while
+        // `triggered_at` is set — see scheduler.rs.)
+        if row.panic_mode == "release" {
+            let watchable = [
+                VaultState::Active,
+                VaultState::Suspicious,
+                VaultState::Alert,
+            ];
+            if let Ok(vaults) = db::list_vaults(&state.pool, row.principal_id).await {
+                for vault in vaults.into_iter().filter(|v| watchable.contains(&v.state)) {
+                    if db::claim_vault_cooling_off(&state.pool, vault.id, vault.state)
+                        .await
+                        .unwrap_or(false)
+                    {
+                        let ends_at =
+                            Utc::now() + chrono::Duration::seconds(vault.cooling_off_seconds as i64);
+                        if let Ok(principal) =
+                            db::fetch_principal(&state.pool, vault.principal_id).await
+                        {
+                            crate::notifications::tx::cooling_off_started(
+                                state.notifications.as_ref(),
+                                &principal.primary_email,
+                                &vault.name,
+                                &ends_at.to_rfc3339(),
+                            )
+                            .await;
+                        }
+                        let _ = db::create_release_event_with_deadline(
+                            &state.pool,
+                            vault.id,
+                            ReleaseReason::SignalTrigger,
+                            false,
+                            ends_at,
+                        )
+                        .await;
+                        let _ = db::append_transparency_entry(
+                            &state.pool,
+                            "DURESS_RELEASE_TRIGGERED",
+                            &hash_bytes(vault.id.as_uuid().as_bytes()),
+                            json!({ "panic_mode": "release" }),
+                            Some(vault.principal_id),
+                            Some(vault.id),
+                        )
+                        .await;
+                    }
+                }
+            }
+        }
     }
     axum::http::StatusCode::OK
 }

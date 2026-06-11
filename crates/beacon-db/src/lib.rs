@@ -2383,6 +2383,8 @@ pub struct DuressSignalRow {
     pub alert_email: Option<String>,
     pub armed_at: DateTime<Utc>,
     pub triggered_at: Option<DateTime<Utc>>,
+    /// "freeze" (default) or "release".
+    pub panic_mode: String,
 }
 
 fn row_to_duress(row: &PgRow) -> DuressSignalRow {
@@ -2392,6 +2394,9 @@ fn row_to_duress(row: &PgRow) -> DuressSignalRow {
         alert_email: row.try_get("alert_email").ok().flatten(),
         armed_at: row.get("armed_at"),
         triggered_at: row.try_get("triggered_at").ok().flatten(),
+        panic_mode: row
+            .try_get("panic_mode")
+            .unwrap_or_else(|_| "freeze".into()),
     }
 }
 
@@ -2402,21 +2407,24 @@ pub async fn arm_duress(
     principal_id: PrincipalId,
     webhook_id: Uuid,
     alert_email: Option<&str>,
+    panic_mode: &str,
 ) -> Result<DuressSignalRow, DbError> {
     let row = sqlx::query(
-        "INSERT INTO duress_signal (principal_id, webhook_id, alert_email)
-         VALUES ($1, $2, $3)
+        "INSERT INTO duress_signal (principal_id, webhook_id, alert_email, panic_mode)
+         VALUES ($1, $2, $3, $4)
          ON CONFLICT (principal_id) DO UPDATE
             SET webhook_id = EXCLUDED.webhook_id,
                 alert_email = EXCLUDED.alert_email,
+                panic_mode = EXCLUDED.panic_mode,
                 armed_at = now(),
                 triggered_at = NULL,
                 last_alert_at = NULL
-         RETURNING principal_id, webhook_id, alert_email, armed_at, triggered_at",
+         RETURNING principal_id, webhook_id, alert_email, armed_at, triggered_at, panic_mode",
     )
     .bind(principal_id.as_uuid())
     .bind(webhook_id)
     .bind(alert_email)
+    .bind(panic_mode)
     .fetch_one(pool)
     .await?;
     Ok(row_to_duress(&row))
@@ -2427,7 +2435,7 @@ pub async fn fetch_duress(
     principal_id: PrincipalId,
 ) -> Result<Option<DuressSignalRow>, DbError> {
     let row = sqlx::query(
-        "SELECT principal_id, webhook_id, alert_email, armed_at, triggered_at
+        "SELECT principal_id, webhook_id, alert_email, armed_at, triggered_at, panic_mode
            FROM duress_signal WHERE principal_id = $1",
     )
     .bind(principal_id.as_uuid())
@@ -2457,7 +2465,7 @@ pub async fn trigger_duress(
             SET triggered_at = COALESCE(triggered_at, $1),
                 last_alert_at = $1
           WHERE webhook_id = $2
-        RETURNING principal_id, webhook_id, alert_email, armed_at, triggered_at",
+        RETURNING principal_id, webhook_id, alert_email, armed_at, triggered_at, panic_mode",
     )
     .bind(now)
     .bind(webhook_id)
