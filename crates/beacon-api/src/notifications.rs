@@ -41,7 +41,14 @@ pub struct OutboundMessage {
     pub channel: Channel,
     pub to: String,
     pub subject: Option<String>,
+    /// Plain-text body. Always present — it is the fallback half of every
+    /// multipart email and the only copy for non-email channels.
     pub body: String,
+    /// Optional HTML rendering of `body`. When set, email adapters send a
+    /// `multipart/alternative` message (text + HTML) so clients that prefer
+    /// rich content get the branded version while text-only clients still read
+    /// `body`. `None` ships a plain-text-only email — identical to before.
+    pub html: Option<String>,
 }
 
 #[async_trait]
@@ -127,14 +134,20 @@ impl ResendNotifications {
     }
 
     /// Build the Resend `POST /emails` JSON body. Separated so the field mapping
-    /// is unit-testable without a network round-trip.
+    /// is unit-testable without a network round-trip. When the message carries an
+    /// HTML rendering we add the `html` field; Resend then delivers a multipart
+    /// message and the recipient's client picks the richer part.
     fn payload(&self, msg: &OutboundMessage) -> serde_json::Value {
-        serde_json::json!({
+        let mut payload = serde_json::json!({
             "from": self.from,
             "to": [msg.to],
             "subject": msg.subject.clone().unwrap_or_default(),
             "text": msg.body,
-        })
+        });
+        if let Some(html) = &msg.html {
+            payload["html"] = serde_json::Value::String(html.clone());
+        }
+        payload
     }
 }
 
@@ -242,13 +255,23 @@ impl NotificationSink for SmtpNotifications {
                 return;
             }
         };
-        let email = match lettre::Message::builder()
+        let builder = lettre::Message::builder()
             .from(from)
             .to(to)
-            .subject(msg.subject.clone().unwrap_or_default())
-            .header(lettre::message::header::ContentType::TEXT_PLAIN)
-            .body(msg.body.clone())
-        {
+            .subject(msg.subject.clone().unwrap_or_default());
+        // With HTML present, send multipart/alternative (text + HTML) so the
+        // plain body remains the guaranteed fallback. Otherwise, a plain-text
+        // message exactly as before.
+        let built = match &msg.html {
+            Some(html) => builder.multipart(lettre::message::MultiPart::alternative_plain_html(
+                msg.body.clone(),
+                html.clone(),
+            )),
+            None => builder
+                .header(lettre::message::header::ContentType::TEXT_PLAIN)
+                .body(msg.body.clone()),
+        };
+        let email = match built {
             Ok(m) => m,
             Err(e) => {
                 tracing::error!(error = %e, "SMTP: failed to build message");
@@ -262,11 +285,83 @@ impl NotificationSink for SmtpNotifications {
     }
 }
 
+/// Minimal HTML-escape for interpolating dynamic text (vault names, email
+/// addresses, recovery codes, titles) into email markup. `&` is replaced first
+/// so the entities we introduce are not themselves re-escaped.
+fn esc(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// Wrap inner HTML in a branded, email-client-safe shell: a centered table
+/// layout with fully-inline CSS — the only combination that renders
+/// consistently across Gmail, Outlook, Apple Mail, and the rest. The plain-text
+/// `body` always ships alongside this (multipart/alternative), so this is purely
+/// the richer rendering, never the only copy.
+fn html_email(body_html: &str) -> String {
+    format!(
+        "<!DOCTYPE html>\n\
+         <html lang=\"en\"><head>\
+         <meta charset=\"utf-8\">\
+         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\
+         </head>\
+         <body style=\"margin:0;padding:0;background:#f4f5f7;\">\
+         <table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" \
+         style=\"background:#f4f5f7;\"><tr><td align=\"center\" style=\"padding:32px 16px;\">\
+         <table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" \
+         style=\"max-width:520px;background:#ffffff;border-radius:12px;border:1px solid #e3e6ea;\
+         overflow:hidden;\">\
+         <tr><td style=\"padding:24px 32px;background:#0f172a;\">\
+         <span style=\"font:600 18px -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,\
+         Arial,sans-serif;color:#ffffff;letter-spacing:0.02em;\">Paschal</span></td></tr>\
+         <tr><td style=\"padding:32px;font:400 15px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',\
+         Roboto,Helvetica,Arial,sans-serif;color:#1f2933;\">{body_html}</td></tr>\
+         <tr><td style=\"padding:20px 32px;border-top:1px solid #e3e6ea;font:400 12px/1.5 \
+         -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;\
+         color:#8895a7;\">Paschal is a digital continuity service. This message and its \
+         transparency-log entry are recorded.</td></tr>\
+         </table></td></tr></table></body></html>"
+    )
+}
+
+/// A section heading for the email body, styled inline to match the shell.
+fn heading(text: &str) -> String {
+    format!(
+        "<h1 style=\"margin:0 0 16px;font:600 20px -apple-system,BlinkMacSystemFont,'Segoe UI',\
+         Roboto,Helvetica,Arial,sans-serif;color:#0f172a;\">{}</h1>",
+        esc(text)
+    )
+}
+
+/// A centered call-to-action button — a styled anchor in a table cell, which
+/// renders as a button across modern clients without VML hacks.
+fn cta_button(label: &str, url: &str) -> String {
+    format!(
+        "<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" style=\"margin:24px 0;\">\
+         <tr><td align=\"center\" style=\"border-radius:8px;background:#2563eb;\">\
+         <a href=\"{url}\" style=\"display:inline-block;padding:12px 28px;font:600 15px -apple-system,\
+         BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#ffffff;\
+         text-decoration:none;border-radius:8px;\">{label}</a></td></tr></table>",
+        url = esc(url),
+        label = esc(label),
+    )
+}
+
 /// Convenience helpers for sending the standard message shapes.
 pub mod tx {
     use super::*;
 
     pub async fn welcome(sink: &dyn NotificationSink, email: &str, trial_end_at: &str) {
+        let html = html_email(&format!(
+            "{heading}\
+             <p style=\"margin:0 0 16px;\">Your trial ends on <strong>{trial}</strong>.</p>\
+             <p style=\"margin:0;\">You can author Letters now \u{2014} we'll run a rehearsal soon \
+             so you can see exactly how delivery works.</p>",
+            heading = heading("Welcome to Paschal"),
+            trial = esc(trial_end_at),
+        ));
         sink.send(OutboundMessage {
             channel: Channel::Email,
             to: email.into(),
@@ -275,11 +370,15 @@ pub mod tx {
                 "Welcome to Paschal. Your Trial ends at {trial_end_at}.\n\
                  You can author Letters now; we will run a rehearsal soon."
             ),
+            html: Some(html),
         })
         .await;
     }
 
     pub async fn magic_link(sink: &dyn NotificationSink, email: &str, link: &str) {
+        // Intentionally text-only: a sign-in link should arrive as bare, legible
+        // text with no rendered button to mimic — it makes phishing look-alikes
+        // harder and keeps the one-time link impossible to misattribute.
         sink.send(OutboundMessage {
             channel: Channel::Email,
             to: email.into(),
@@ -292,6 +391,7 @@ pub mod tx {
                  \u{2014} no one can sign in without it.\n\n\
                  \u{2014} The Paschal team"
             ),
+            html: None,
         })
         .await;
     }
@@ -302,6 +402,15 @@ pub mod tx {
         vault_name: &str,
         ends_at: &str,
     ) {
+        let html = html_email(&format!(
+            "{heading}\
+             <p style=\"margin:0 0 16px;\">Your <strong>{vault}</strong> Vault entered \
+             cooling-off. Unless you cancel, it will release at <strong>{ends}</strong>.</p>\
+             <p style=\"margin:0;\">You can cancel from any signed-in device.</p>",
+            heading = heading(&format!("Your {vault_name} Vault is in cooling-off")),
+            vault = esc(vault_name),
+            ends = esc(ends_at),
+        ));
         sink.send(OutboundMessage {
             channel: Channel::Email,
             to: principal_email.into(),
@@ -311,16 +420,24 @@ pub mod tx {
                  Unless you cancel, it will release at {ends_at}.\n\
                  Cancel from any signed-in device."
             ),
+            html: Some(html),
         })
         .await;
     }
 
     pub async fn cooling_off_cancelled(sink: &dyn NotificationSink, principal_email: &str) {
+        let html = html_email(&format!(
+            "{heading}\
+             <p style=\"margin:0;\">Your Vault is back to <strong>Active</strong>. No further \
+             action is needed.</p>",
+            heading = heading("Cooling-off cancelled"),
+        ));
         sink.send(OutboundMessage {
             channel: Channel::Email,
             to: principal_email.into(),
             subject: Some("Cooling-off cancelled".into()),
             body: "Your Vault is back to Active. No further action.".into(),
+            html: Some(html),
         })
         .await;
     }
@@ -376,6 +493,38 @@ pub mod tx {
             )
         };
 
+        let attachments_html = if attachments.is_empty() {
+            String::new()
+        } else {
+            let items: Vec<String> = attachments
+                .iter()
+                .map(|(name, url)| {
+                    format!(
+                        "<li style=\"margin:0 0 8px;\"><a href=\"{}\" \
+                         style=\"color:#2563eb;\">{}</a></li>",
+                        esc(url),
+                        esc(name)
+                    )
+                })
+                .collect();
+            format!(
+                "<p style=\"margin:24px 0 8px;font-weight:600;\">Attachments (each link works \
+                 once):</p><ul style=\"margin:0;padding-left:20px;\">{}</ul>",
+                items.join("")
+            )
+        };
+
+        let html = html_email(&format!(
+            "{heading}\
+             <p style=\"margin:0 0 16px;\">{opener}</p>\
+             <p style=\"margin:0;\">Title: <strong>{title}</strong></p>\
+             {cta}{attachments_html}",
+            heading = heading(subject),
+            opener = esc(opener),
+            title = esc(letter_title),
+            cta = cta_button("Open the Letter", claim_url),
+        ));
+
         sink.send(OutboundMessage {
             channel: Channel::Email,
             to: recipient.into(),
@@ -385,6 +534,7 @@ pub mod tx {
                  Paschal is a digital continuity service. The transparency \
                  log entry for this message is recorded."
             ),
+            html: Some(html),
         })
         .await;
     }
@@ -395,6 +545,17 @@ pub mod tx {
         principal_email: &str,
         confirmation_url: &str,
     ) {
+        let html = html_email(&format!(
+            "{heading}\
+             <p style=\"margin:0 0 16px;\"><strong>{principal}</strong> added you as a Buddy on \
+             Paschal.</p>\
+             <p style=\"margin:0;\">You'll be asked to confirm they're well, occasionally. You \
+             never see Letter contents.</p>\
+             {cta}",
+            heading = heading("You were invited as a Paschal Buddy"),
+            principal = esc(principal_email),
+            cta = cta_button("Confirm your role", confirmation_url),
+        ));
         sink.send(OutboundMessage {
             channel: Channel::Email,
             to: buddy_email.into(),
@@ -404,6 +565,7 @@ pub mod tx {
                  You will be asked to confirm they are well, occasionally.\n\
                  Confirm your role: {confirmation_url}"
             ),
+            html: Some(html),
         })
         .await;
     }
@@ -416,6 +578,21 @@ pub mod tx {
     /// use `manual` mode, where the passphrase never reaches Paschal at all. We
     /// deliberately don't name the sender (the recipient learns who at release).
     pub async fn heir_share(sink: &dyn NotificationSink, recipient_email: &str, share_code: &str) {
+        let html = html_email(&format!(
+            "{heading}\
+             <p style=\"margin:0 0 16px;\">Someone has written you a letter through Paschal, to \
+             be delivered to you at some point in the future.</p>\
+             <p style=\"margin:0 0 12px;\">Keep this recovery code somewhere safe \u{2014} you'll \
+             need it to open the letter if and when it is delivered to you:</p>\
+             <p style=\"margin:0 0 16px;padding:16px;background:#f4f5f7;border-radius:8px;\
+             font:600 18px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#0f172a;\
+             text-align:center;letter-spacing:0.05em;\">{code}</p>\
+             <p style=\"margin:0;\">There's nothing to do now. If the letter is ever released \
+             you'll get a link, and this code will open it. We cannot recover this code for you, \
+             and we cannot read the letter.</p>",
+            heading = heading("You've been named in a Paschal letter"),
+            code = esc(share_code),
+        ));
         sink.send(OutboundMessage {
             channel: Channel::Email,
             to: recipient_email.into(),
@@ -429,6 +606,7 @@ pub mod tx {
                  link, and this code will open it. We cannot recover this code for you, \
                  and we cannot read the letter."
             ),
+            html: Some(html),
         })
         .await;
     }
@@ -443,6 +621,18 @@ pub mod tx {
         letter_title: &str,
         effective_at: &str,
     ) {
+        let html = html_email(&format!(
+            "{heading}\
+             <p style=\"margin:0 0 16px;\">A Co-Steward has asked to change the delivery contact \
+             for the Letter \u{201c}<strong>{title}</strong>\u{201d}.</p>\
+             <p style=\"margin:0 0 16px;\">The change takes effect at <strong>{effective}</strong>.\
+             </p>\
+             <p style=\"margin:0;\">If this is unexpected, contact support before then. The change \
+             is recorded in the transparency log.</p>",
+            heading = heading("A delivery address was changed"),
+            title = esc(letter_title),
+            effective = esc(effective_at),
+        ));
         sink.send(OutboundMessage {
             channel: Channel::Email,
             to: old_recipient.into(),
@@ -454,6 +644,7 @@ pub mod tx {
                  If this is unexpected, contact support before then. The change is \
                  recorded in the transparency log."
             ),
+            html: Some(html),
         })
         .await;
     }
@@ -464,6 +655,21 @@ pub mod tx {
         principal_email: &str,
         confirmation_url: &str,
     ) {
+        let html = html_email(&format!(
+            "{heading}\
+             <p style=\"margin:0 0 16px;\"><strong>{principal}</strong> nominated you as a \
+             Co-Steward on their Paschal account.</p>\
+             <p style=\"margin:0 0 16px;\">As a Co-Steward you can <strong>see</strong> the state \
+             of their Vaults \u{2014} last heartbeat, signal strength, scheduled releases \u{2014} \
+             but you will <strong>never</strong> see Letter contents and you cannot change \
+             anything.</p>\
+             {cta}\
+             <p style=\"margin:16px 0 0;color:#8895a7;\">You can refuse simply by ignoring this \
+             email.</p>",
+            heading = heading("You were invited as a Paschal Co-Steward"),
+            principal = esc(principal_email),
+            cta = cta_button("Accept and set a passphrase", confirmation_url),
+        ));
         sink.send(OutboundMessage {
             channel: Channel::Email,
             to: co_steward_email.into(),
@@ -480,6 +686,7 @@ pub mod tx {
                  \n\
                  You can refuse simply by ignoring this email."
             ),
+            html: Some(html),
         })
         .await;
     }
@@ -498,6 +705,7 @@ mod tests {
             to: "heir@example.org".into(),
             subject: Some("A letter is waiting for you".into()),
             body: "Open it: https://vault.example.com/claim?token=abc".into(),
+            html: None,
         };
         let p = sink.payload(&msg);
         assert_eq!(p["from"], "Paschal <noreply@example.com>");
@@ -507,6 +715,8 @@ mod tests {
             p["text"],
             "Open it: https://vault.example.com/claim?token=abc"
         );
+        // No HTML field unless an HTML body is supplied.
+        assert!(p.get("html").is_none());
     }
 
     #[test]
@@ -517,8 +727,48 @@ mod tests {
             to: "a@b.com".into(),
             subject: None,
             body: "hi".into(),
+            html: None,
         };
         assert_eq!(sink.payload(&msg)["subject"], "");
+    }
+
+    #[test]
+    fn resend_payload_includes_html_when_provided() {
+        let sink = ResendNotifications::new("re".into(), "x@example.com".into());
+        let msg = OutboundMessage {
+            channel: Channel::Email,
+            to: "a@b.com".into(),
+            subject: Some("Hi".into()),
+            body: "plain text".into(),
+            html: Some("<p>rich text</p>".into()),
+        };
+        let p = sink.payload(&msg);
+        assert_eq!(p["text"], "plain text");
+        assert_eq!(p["html"], "<p>rich text</p>");
+    }
+
+    #[test]
+    fn esc_escapes_html_metacharacters() {
+        assert_eq!(
+            esc("a & b < c > d \" e"),
+            "a &amp; b &lt; c &gt; d &quot; e"
+        );
+    }
+
+    #[test]
+    fn html_email_wraps_body_and_brands() {
+        let out = html_email("<p>hello world</p>");
+        assert!(out.starts_with("<!DOCTYPE html>"));
+        assert!(out.contains("<p>hello world</p>"));
+        assert!(out.contains("Paschal"));
+    }
+
+    #[test]
+    fn cta_button_escapes_url() {
+        let html = cta_button("Open", "https://x.test/claim?a=1&b=2");
+        // The ampersand in the URL must be escaped for valid HTML attributes.
+        assert!(html.contains("a=1&amp;b=2"));
+        assert!(html.contains(">Open<"));
     }
 
     #[test]

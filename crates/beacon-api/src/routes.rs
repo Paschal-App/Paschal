@@ -1829,6 +1829,7 @@ pub async fn request_account_deletion(
                  account, sign in and reverse this request within 30 days.",
                 scheduled = scheduled.to_rfc3339()
             ),
+            html: None,
         })
         .await;
 
@@ -2961,6 +2962,7 @@ pub async fn duress_webhook(
                            through Paschal. Please check on them directly and discreetly. \
                            This message was sent on their prior instruction."
                         .into(),
+                    html: None,
                 })
                 .await;
         }
