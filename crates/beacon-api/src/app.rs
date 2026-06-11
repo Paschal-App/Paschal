@@ -76,7 +76,10 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/vaults",
             get(routes::list_vaults).post(routes::create_vault),
         )
-        .route("/v1/vaults/:id", get(routes::get_vault))
+        .route(
+            "/v1/vaults/:id",
+            get(routes::get_vault).patch(routes::update_vault),
+        )
         .route("/v1/vaults/:id/region", post(routes::move_vault_region))
         .route(
             "/v1/vaults/:id/letters",
@@ -89,6 +92,13 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/v1/vaults/:vault_id/letters/:letter_id/export",
             post(routes::export_letter),
+        )
+        // Letter detail / edit / delete
+        .route(
+            "/v1/vaults/:vault_id/letters/:letter_id",
+            get(routes::get_letter)
+                .patch(routes::update_letter)
+                .delete(routes::delete_letter_handler),
         )
         // Private (Zero-Knowledge) letters: browser-encrypted seal + read-back.
         .route("/v1/vaults/:id/letters/zk", post(routes::seal_zk_letter))

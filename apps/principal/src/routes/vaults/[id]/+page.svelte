@@ -18,6 +18,7 @@
     getZkEnvelopes,
     sealZkLetter,
     getZkLetterCiphertext,
+    deleteLetter,
     ApiError
   } from '$lib/api';
   import type { Letter, Vault, VaultContact } from '$lib/api';
@@ -50,6 +51,20 @@
   let loading = $state(true);
   let error = $state<string | null>(null);
   let action = $state<string | null>(null);
+  let deletingLetter = $state<string | null>(null);
+
+  async function doDeleteLetter(letterId: string, title: string) {
+    if (!confirm(`Delete the Letter "${title}"? This permanently erases it and any attachments, and cannot be undone.`)) return;
+    deletingLetter = letterId;
+    try {
+      await deleteLetter(vaultId, letterId);
+      letters = letters.filter((l) => l.id !== letterId);
+    } catch (e) {
+      error = e instanceof ApiError ? e.problem.detail || e.problem.title : String(e);
+    } finally {
+      deletingLetter = null;
+    }
+  }
   let notice = $state<string | null>(null);
 
   // Contact form state
@@ -518,7 +533,7 @@
           {:else}
             <table>
               <thead>
-                <tr><th>Title</th><th>Recipient</th><th>Sealed</th>{#if isZk}<th></th>{/if}</tr>
+                <tr><th>Title</th><th>Recipient</th><th>Sealed</th><th></th></tr>
               </thead>
               <tbody>
                 {#each letters as l (l.id)}
@@ -526,8 +541,8 @@
                     <td>{l.title}</td>
                     <td class="mono">{l.recipient_email}</td>
                     <td>{fmtDate(l.sealed_at)}</td>
-                    {#if isZk}
-                      <td>
+                    <td style="white-space:nowrap;">
+                      {#if isZk}
                         <button
                           type="button"
                           class="revoke-btn"
@@ -536,8 +551,17 @@
                         >
                           {decrypting === l.id ? 'Decrypting…' : (l.id in openBodies ? 'Hide' : 'View')}
                         </button>
-                      </td>
-                    {/if}
+                      {/if}
+                      <button
+                        type="button"
+                        class="revoke-btn"
+                        style="color: var(--burgundy);"
+                        onclick={() => doDeleteLetter(l.id, l.title)}
+                        disabled={deletingLetter === l.id}
+                      >
+                        {deletingLetter === l.id ? 'Deleting…' : 'Delete'}
+                      </button>
+                    </td>
                   </tr>
                   {#if isZk && l.id in openBodies}
                     <tr class="zk-body-row">
