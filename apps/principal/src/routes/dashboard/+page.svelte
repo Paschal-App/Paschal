@@ -23,6 +23,7 @@
   let copied = $state(false);
   let duress = $state<DuressStatus | null>(null);
   let duressEmail = $state('');
+  let duressPanicMode = $state<'freeze' | 'release'>('freeze');
   let duressAction = $state<string | null>(null);
 
   async function load() {
@@ -81,7 +82,7 @@
   async function armDuressHandler() {
     duressAction = 'arm';
     try {
-      duress = await armDuress(duressEmail);
+      duress = await armDuress(duressEmail, duressPanicMode);
     } catch (e) {
       error = e instanceof ApiError ? e.problem.detail || e.problem.title : String(e);
     } finally {
@@ -375,6 +376,17 @@
           placeholder="trusted@example.com"
           help="They get a discreet wellbeing-check message when you trigger duress."
         />
+        <fieldset style="border:var(--rule);padding:var(--sp-2);margin:var(--sp-2) 0;display:flex;flex-direction:column;gap:var(--sp-1);">
+          <legend style="font-size:var(--size-caption);color:var(--slate);text-transform:uppercase;letter-spacing:0.04em;padding:0 6px;">When triggered</legend>
+          <label style="display:flex;gap:var(--sp-1);align-items:flex-start;font-size:var(--size-body-2);cursor:pointer;">
+            <input type="radio" name="panic_mode" value="freeze" bind:group={duressPanicMode} style="margin-top:4px;flex-shrink:0;" />
+            <span><strong>Freeze</strong> — pause every Vault's release while duress is active (default; for coercion).</span>
+          </label>
+          <label style="display:flex;gap:var(--sp-1);align-items:flex-start;font-size:var(--size-body-2);cursor:pointer;">
+            <input type="radio" name="panic_mode" value="release" bind:group={duressPanicMode} style="margin-top:4px;flex-shrink:0;" />
+            <span><strong>Release</strong> — immediately start cooling-off on all active Vaults (carry out your wishes without delay).</span>
+          </label>
+        </fieldset>
         <Button onclick={armDuressHandler} disabled={duressAction !== null}>
           {duressAction === 'arm' ? 'Arming…' : 'Arm duress signal'}
         </Button>

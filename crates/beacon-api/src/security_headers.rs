@@ -38,13 +38,6 @@ pub async fn middleware(req: Request<axum::body::Body>, next: Next) -> Response 
         "max-age=31536000; includeSubDomains",
     );
 
-    // Block unused browser APIs (cameras, mics, geolocation, payments).
-    insert(
-        headers,
-        "permissions-policy",
-        "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()",
-    );
-
     // CSP differs by surface. Three profiles, picked by URL prefix:
     //   * Browser-rendered pages (/claim, /docs, /app/*, /) — need to
     //     load fonts from Google, sometimes Swagger UI from jsdelivr,
@@ -56,6 +49,16 @@ pub async fn middleware(req: Request<axum::body::Body>, next: Next) -> Response 
         || path == "/docs"
         || path == "/app"
         || path.starts_with("/app/");
+
+    // Block unused browser APIs (geolocation, payments, sensors). The SPA
+    // records audio/video letters via MediaRecorder, so mic and camera are
+    // self-allowed on browser pages only; API responses stay fully locked.
+    let permissions = if is_browser_page {
+        "accelerometer=(), camera=(self), geolocation=(), gyroscope=(), magnetometer=(), microphone=(self), payment=(), usb=()"
+    } else {
+        "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+    };
+    insert(headers, "permissions-policy", permissions);
 
     let csp = if is_browser_page {
         "default-src 'self'; \
@@ -184,6 +187,49 @@ mod tests {
                 "SPA must not have the API CSP at {path}: {csp}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn spa_permissions_policy_allows_self_mic_and_camera() {
+        let app: Router = Router::new()
+            .route("/app/letters/new", get(dummy))
+            .layer(axum::middleware::from_fn(middleware));
+
+        let req = Request::builder()
+            .uri("/app/letters/new")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = tower::ServiceExt::oneshot(app, req).await.unwrap();
+        let pp = resp
+            .headers()
+            .get("permissions-policy")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(pp.contains("microphone=(self)"), "got: {pp}");
+        assert!(pp.contains("camera=(self)"), "got: {pp}");
+        assert!(pp.contains("geolocation=()"));
+    }
+
+    #[tokio::test]
+    async fn api_permissions_policy_blocks_mic_and_camera() {
+        let app: Router = Router::new()
+            .route("/v1/vaults", get(dummy))
+            .layer(axum::middleware::from_fn(middleware));
+
+        let req = Request::builder()
+            .uri("/v1/vaults")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = tower::ServiceExt::oneshot(app, req).await.unwrap();
+        let pp = resp
+            .headers()
+            .get("permissions-policy")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(pp.contains("microphone=()"), "got: {pp}");
+        assert!(pp.contains("camera=()"), "got: {pp}");
     }
 
     #[tokio::test]

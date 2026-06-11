@@ -61,10 +61,7 @@ pub fn build_router(state: AppState) -> Router {
         // Public plan catalog
         .route("/v1/plans", get(routes::list_plans))
         // Public trust endpoints (no auth)
-        .route(
-            "/v1/public/warrant-canary",
-            get(routes::get_warrant_canary),
-        )
+        .route("/v1/public/warrant-canary", get(routes::get_warrant_canary))
         .route(
             "/v1/public/transparency-log",
             get(routes::list_transparency_log),

@@ -479,16 +479,17 @@ export interface DuressStatus {
   triggered_at: string | null;
   webhook_url: string | null;
   alert_email: string | null;
+  panic_mode: 'freeze' | 'release';
 }
 
 export function getDuress() {
   return request<DuressStatus>('/v1/principals/me/duress');
 }
 
-export function armDuress(alertEmail?: string) {
+export function armDuress(alertEmail?: string, panicMode: 'freeze' | 'release' = 'freeze') {
   return request<DuressStatus>('/v1/principals/me/duress', {
     method: 'POST',
-    body: JSON.stringify({ alert_email: alertEmail?.trim() || null })
+    body: JSON.stringify({ alert_email: alertEmail?.trim() || null, panic_mode: panicMode })
   });
 }
 

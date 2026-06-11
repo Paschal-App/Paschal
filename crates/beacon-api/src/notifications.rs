@@ -486,7 +486,10 @@ mod tests {
         assert_eq!(p["from"], "Paschal <noreply@example.com>");
         assert_eq!(p["to"][0], "heir@example.org");
         assert_eq!(p["subject"], "A letter is waiting for you");
-        assert_eq!(p["text"], "Open it: https://vault.example.com/claim?token=abc");
+        assert_eq!(
+            p["text"],
+            "Open it: https://vault.example.com/claim?token=abc"
+        );
     }
 
     #[test]
