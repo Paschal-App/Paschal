@@ -14,6 +14,7 @@
     `${base}/`,
     `${base}/signin`,
     `${base}/auth/verify`,
+    `${base}/buddies/confirm`,
     `${base}/docs`,
     `${base}/co-steward/confirm`,
     `${base}/co-steward/sign-in`,
