@@ -34,6 +34,11 @@ pub fn build_router(state: AppState) -> Router {
         // Auth — email + passwordless passkeys
         .route("/v1/auth/signup", post(routes::signup))
         .route("/v1/auth/signin", post(routes::signin))
+        .route("/v1/auth/signout", post(routes::signout))
+        .route(
+            "/v1/auth/magic-link/verify",
+            post(routes::magic_link_verify),
+        )
         .route(
             "/v1/auth/passkey/register/options",
             post(passkey::passkey_register_options),

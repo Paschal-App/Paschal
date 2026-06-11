@@ -18,6 +18,7 @@
   import Banner from '$lib/components/Banner.svelte';
 
   let email = $state('');
+  let linkSent = $state(false);
   let plans = $state<PublicPlan[]>([]);
   let selected = $state<string>('estate_monthly_v2');
   let tosAccepted = $state(false);
@@ -58,7 +59,13 @@
       save({ token: r.session_token, email, principalId: r.principal_id });
       goto(`${base}/dashboard`);
     } catch (e) {
-      error = e instanceof ApiError ? e.problem.detail || e.problem.title : String(e);
+      if (e instanceof ApiError && e.problem.status === 409) {
+        // Account already exists — the backend emailed a one-time sign-in link
+        // to the owner rather than handing this caller a session.
+        linkSent = true;
+      } else {
+        error = e instanceof ApiError ? e.problem.detail || e.problem.title : String(e);
+      }
     } finally {
       submitting = false;
     }
@@ -75,7 +82,7 @@
       save({ token: r.session_token, email, principalId: r.principal_id });
       goto(`${base}/dashboard`);
     } catch (err) {
-      if (err instanceof ApiError && err.problem.status === 404) {
+      if (err instanceof ApiError && err.problem.status === 401) {
         error = 'No passkey registered for this account. Sign in with email instead.';
       } else {
         error = err instanceof ApiError ? err.problem.detail || err.problem.title : String(err);
@@ -318,6 +325,12 @@
         I understand that if Paschal can no longer operate, my data will be released to me or my nominated Co-Steward as a secure export.
       </label>
 
+      {#if linkSent}
+        <Banner kind="ok">
+          If an account exists for {email}, we've emailed a one-time sign-in link
+          (expires in 15 minutes). Check your spam folder if it doesn't arrive.
+        </Banner>
+      {/if}
       {#if error}<Banner kind="warn">{error}</Banner>{/if}
 
       <div class="row">

@@ -2,6 +2,7 @@
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
   import { base } from '$app/paths';
+  import { signout } from '$lib/api';
   import { clear } from '$lib/session';
   import Monogram from './Monogram.svelte';
 
@@ -17,7 +18,8 @@
     { href: `${base}/docs`, label: 'How it works' }
   ];
 
-  function signOut() {
+  async function signOut() {
+    await signout().catch(() => {});
     clear();
     goto(`${base}/`);
   }
