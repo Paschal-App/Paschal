@@ -3583,3 +3583,56 @@ pub async fn delete_letter_handler(
     db::delete_letter(&state.pool, LetterId(letter_id)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
+
+// ----------------------------------------------------------------------------
+// Activity / presence
+// ----------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct ActivityEventResp {
+    pub source: String,
+    pub observed_at: String,
+    pub vault_name: String,
+    /// Optional human-readable hint from the signal evidence (e.g. via=WEB).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct ActivityResp {
+    pub last_heartbeat_at: Option<String>,
+    /// When the heartbeat signal starts materially fading (decay half-life).
+    pub next_heartbeat_due_at: Option<String>,
+    pub events: Vec<ActivityEventResp>,
+}
+
+/// Heartbeat contribution decays with a 14-day half-life, so that's when the
+/// next check-in is "due".
+const HEARTBEAT_DUE_DAYS: i64 = 14;
+
+pub async fn get_activity(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ApiResult<Json<ActivityResp>> {
+    let pid = current_principal(&state, &headers).await?;
+    let last = db::last_heartbeat(&state.pool, pid).await?;
+    let events = db::list_principal_activity(&state.pool, pid, 20).await?;
+    Ok(Json(ActivityResp {
+        last_heartbeat_at: last.map(|t| t.to_rfc3339()),
+        next_heartbeat_due_at: last
+            .map(|t| (t + chrono::Duration::days(HEARTBEAT_DUE_DAYS)).to_rfc3339()),
+        events: events
+            .into_iter()
+            .map(|e| ActivityEventResp {
+                source: e.source,
+                observed_at: e.observed_at.to_rfc3339(),
+                vault_name: e.vault_name,
+                via: e
+                    .evidence
+                    .get("via")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+            })
+            .collect(),
+    }))
+}

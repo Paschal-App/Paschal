@@ -186,6 +186,7 @@ pub fn build_router(state: AppState) -> Router {
             get(routes::get_subscription),
         )
         .route("/v1/principals/me/usage", get(routes::get_usage))
+        .route("/v1/principals/me/activity", get(routes::get_activity))
         // Passkeys (manage registered devices) + per-principal Recovery Key
         .route("/v1/principals/me/passkeys", get(passkey::list_passkeys))
         .route(

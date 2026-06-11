@@ -435,6 +435,16 @@ export function getUsage() {
   return request<Usage>('/v1/principals/me/usage');
 }
 
+export interface ActivityResp {
+  last_heartbeat_at: string | null;
+  next_heartbeat_due_at: string | null;
+  events: { source: string; observed_at: string; vault_name: string; via?: string }[];
+}
+
+export function getActivity() {
+  return request<ActivityResp>('/v1/principals/me/activity');
+}
+
 export function requestAccountDeletion() {
   return request<{ deletion_scheduled_for: string; cancel_until: string }>(
     '/v1/principals/me',

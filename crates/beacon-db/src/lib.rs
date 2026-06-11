@@ -1308,6 +1308,43 @@ pub async fn last_heartbeat(
     Ok(row.map(|r| r.get("received_at")))
 }
 
+#[derive(Debug, Clone)]
+pub struct ActivityEvent {
+    pub source: String,
+    pub observed_at: DateTime<Utc>,
+    pub vault_name: String,
+    pub evidence: serde_json::Value,
+}
+
+/// Recent presence / proof-of-life signals across the principal's Vaults.
+pub async fn list_principal_activity(
+    pool: &PgPool,
+    principal_id: PrincipalId,
+    limit: i64,
+) -> Result<Vec<ActivityEvent>, DbError> {
+    let rows = sqlx::query(
+        "SELECT s.source, s.observed_at, s.evidence, v.name AS vault_name
+           FROM signal s
+           JOIN vault v ON v.id = s.vault_id
+          WHERE v.principal_id = $1
+          ORDER BY s.observed_at DESC
+          LIMIT $2",
+    )
+    .bind(principal_id.as_uuid())
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .iter()
+        .map(|r| ActivityEvent {
+            source: r.get("source"),
+            observed_at: r.get("observed_at"),
+            vault_name: r.get("vault_name"),
+            evidence: r.try_get("evidence").unwrap_or(serde_json::Value::Null),
+        })
+        .collect())
+}
+
 // ----------------------------------------------------------------------------
 // Releases
 // ----------------------------------------------------------------------------
