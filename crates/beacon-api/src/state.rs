@@ -192,63 +192,62 @@ impl AppState {
             .unwrap_or_else(|_| "./logs/notifications.log".into());
         let email_from =
             std::env::var("EMAIL_FROM").unwrap_or_else(|_| "Paschal <noreply@localhost>".into());
-        let notifications: Arc<dyn NotificationSink> =
-            match std::env::var("NOTIFICATIONS_BACKEND")
-                .unwrap_or_default()
-                .as_str()
-            {
-                "resend" => {
-                    // Guard like a feature flag: a non-`re_` value (e.g. an `unset`
-                    // placeholder) stays in stub mode rather than 401-ing every send.
-                    let api_key = std::env::var("RESEND_API_KEY").unwrap_or_default();
-                    if api_key.starts_with("re_") {
-                        tracing::info!(from = %email_from, "notifications: Resend");
-                        Arc::new(crate::notifications::ResendNotifications::new(
-                            api_key,
-                            email_from.clone(),
-                        ))
-                    } else {
-                        tracing::warn!(
+        let notifications: Arc<dyn NotificationSink> = match std::env::var("NOTIFICATIONS_BACKEND")
+            .unwrap_or_default()
+            .as_str()
+        {
+            "resend" => {
+                // Guard like a feature flag: a non-`re_` value (e.g. an `unset`
+                // placeholder) stays in stub mode rather than 401-ing every send.
+                let api_key = std::env::var("RESEND_API_KEY").unwrap_or_default();
+                if api_key.starts_with("re_") {
+                    tracing::info!(from = %email_from, "notifications: Resend");
+                    Arc::new(crate::notifications::ResendNotifications::new(
+                        api_key,
+                        email_from.clone(),
+                    ))
+                } else {
+                    tracing::warn!(
                             "NOTIFICATIONS_BACKEND=resend but RESEND_API_KEY has no re_ prefix; using stub"
                         );
-                        Arc::new(StubNotifications::new(notifications_log))
-                    }
+                    Arc::new(StubNotifications::new(notifications_log))
                 }
-                "smtp" => {
-                    let host = std::env::var("SMTP_HOST").unwrap_or_default();
-                    if host.is_empty() {
-                        tracing::warn!(
-                            "NOTIFICATIONS_BACKEND=smtp but SMTP_HOST is empty; using stub"
-                        );
-                        Arc::new(StubNotifications::new(notifications_log))
-                    } else {
-                        let port = std::env::var("SMTP_PORT").ok().and_then(|s| s.parse().ok());
-                        let username =
-                            std::env::var("SMTP_USERNAME").ok().filter(|s| !s.is_empty());
-                        let password =
-                            std::env::var("SMTP_PASSWORD").ok().filter(|s| !s.is_empty());
-                        let tls = std::env::var("SMTP_TLS").unwrap_or_else(|_| "starttls".into());
-                        match crate::notifications::SmtpNotifications::new(
-                            &host,
-                            port,
-                            username,
-                            password,
-                            &tls,
-                            email_from.clone(),
-                        ) {
-                            Ok(sink) => {
-                                tracing::info!(%host, from = %email_from, "notifications: SMTP");
-                                Arc::new(sink)
-                            }
-                            Err(e) => {
-                                tracing::error!(error = %e, "SMTP transport build failed; using stub");
-                                Arc::new(StubNotifications::new(notifications_log))
-                            }
+            }
+            "smtp" => {
+                let host = std::env::var("SMTP_HOST").unwrap_or_default();
+                if host.is_empty() {
+                    tracing::warn!("NOTIFICATIONS_BACKEND=smtp but SMTP_HOST is empty; using stub");
+                    Arc::new(StubNotifications::new(notifications_log))
+                } else {
+                    let port = std::env::var("SMTP_PORT").ok().and_then(|s| s.parse().ok());
+                    let username = std::env::var("SMTP_USERNAME")
+                        .ok()
+                        .filter(|s| !s.is_empty());
+                    let password = std::env::var("SMTP_PASSWORD")
+                        .ok()
+                        .filter(|s| !s.is_empty());
+                    let tls = std::env::var("SMTP_TLS").unwrap_or_else(|_| "starttls".into());
+                    match crate::notifications::SmtpNotifications::new(
+                        &host,
+                        port,
+                        username,
+                        password,
+                        &tls,
+                        email_from.clone(),
+                    ) {
+                        Ok(sink) => {
+                            tracing::info!(%host, from = %email_from, "notifications: SMTP");
+                            Arc::new(sink)
+                        }
+                        Err(e) => {
+                            tracing::error!(error = %e, "SMTP transport build failed; using stub");
+                            Arc::new(StubNotifications::new(notifications_log))
                         }
                     }
                 }
-                _ => Arc::new(StubNotifications::new(notifications_log)),
-            };
+            }
+            _ => Arc::new(StubNotifications::new(notifications_log)),
+        };
 
         // Blob backend: `local` (filesystem, dev) or `s3` (SSE-KMS, required
         // on Fargate where task disk is ephemeral and not shared blue/green).

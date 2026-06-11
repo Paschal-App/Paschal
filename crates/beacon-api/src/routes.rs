@@ -2962,8 +2962,8 @@ pub async fn duress_webhook(
                         .await
                         .unwrap_or(false)
                     {
-                        let ends_at =
-                            Utc::now() + chrono::Duration::seconds(vault.cooling_off_seconds as i64);
+                        let ends_at = Utc::now()
+                            + chrono::Duration::seconds(vault.cooling_off_seconds as i64);
                         if let Ok(principal) =
                             db::fetch_principal(&state.pool, vault.principal_id).await
                         {

@@ -2728,7 +2728,6 @@ pub async fn fetch_principal_by_email(
     Ok(row.map(|r| row_to_principal(&r)))
 }
 
-
 // WebAuthn — challenges
 // ----------------------------------------------------------------------------
 
