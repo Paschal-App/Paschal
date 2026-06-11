@@ -27,7 +27,7 @@ export interface SignupResp {
   principal_id: string;
   session_token: string;
   subscription_state: SubscriptionState;
-  trial_end_at: string;
+  trial_end_at?: string;
   magic_token_DEV_ONLY?: string;
 }
 

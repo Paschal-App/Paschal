@@ -7,7 +7,7 @@
 use axum::{
     body::Body,
     extract::{Multipart, Path, Query, State},
-    http::{header, HeaderMap},
+    http::{header, HeaderMap, StatusCode},
     response::Response,
     Json,
 };
@@ -144,11 +144,15 @@ pub struct SignupResp {
     pub principal_id: PrincipalId,
     pub session_token: String,
     pub subscription_state: String,
-    pub trial_end_at: String,
-    /// In production this is emailed, not returned. The skeleton returns it
-    /// so the CLI can complete the flow without an SMTP server.
-    #[serde(rename = "magic_token_DEV_ONLY")]
-    pub magic_token_dev_only: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trial_end_at: Option<String>,
+    /// Dev-only: returned in debug builds so the CLI can complete the flow
+    /// without an SMTP server. Never serialised in release.
+    #[serde(
+        rename = "magic_token_DEV_ONLY",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub magic_token_dev_only: Option<String>,
 }
 
 pub async fn signup(
@@ -165,7 +169,27 @@ pub async fn signup(
     }
     let _ = body.display_name; // recorded by the principal-update endpoint later
 
-    let (principal, _created) = db::upsert_principal_by_email(&state.pool, &body.email).await?;
+    let (principal, created) = db::upsert_principal_by_email(&state.pool, &body.email).await?;
+    if !created {
+        // The account already exists: never hand a session to an unverified
+        // caller (knowing the email is not proof of ownership). Email a one-time
+        // sign-in link to the real owner instead, and return a conflict.
+        let magic = random_token();
+        db::create_magic_link(&state.pool, principal.id, &hash_token(&magic), 15).await?;
+        let link = format!(
+            "{}/app/auth/verify?token={magic}",
+            state.config.public_base_url.trim_end_matches('/'),
+        );
+        tx::magic_link(
+            state.notifications.as_ref(),
+            &principal.primary_email,
+            &link,
+        )
+        .await;
+        return Err(ApiError::Conflict(
+            "An account with this email already exists. We've emailed you a sign-in link.".into(),
+        ));
+    }
     let _ = db::set_tos_accepted(&state.pool, principal.id).await;
 
     let sub = match db::fetch_subscription(&state.pool, principal.id).await {
@@ -208,8 +232,12 @@ pub async fn signup(
         principal_id: principal.id,
         session_token: session,
         subscription_state: sub.state.as_db_str().to_string(),
-        trial_end_at: sub.trial_end_at.unwrap_or_else(Utc::now).to_rfc3339(),
-        magic_token_dev_only: magic,
+        trial_end_at: sub.trial_end_at.map(|t| t.to_rfc3339()),
+        magic_token_dev_only: if cfg!(debug_assertions) {
+            Some(magic)
+        } else {
+            None
+        },
     }))
 }
 
@@ -3011,10 +3039,20 @@ pub struct SigninReq {
 
 #[derive(Serialize)]
 pub struct SigninResp {
-    pub principal_id: PrincipalId,
-    pub session_token: String,
+    pub status: String,
+    #[serde(
+        rename = "magic_token_DEV_ONLY",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub magic_token_dev_only: Option<String>,
 }
 
+/// Email sign-in, step 1: send a one-time magic link.
+///
+/// Always returns 200 with the same body whether or not an account exists, so
+/// the endpoint cannot be used to enumerate accounts, and — critically — never
+/// issues a session just because someone knows an email address. The session is
+/// only minted by [`magic_link_verify`] after the emailed token is redeemed.
 pub async fn signin(
     State(state): State<AppState>,
     Json(body): Json<SigninReq>,
@@ -3022,15 +3060,74 @@ pub async fn signin(
     if !body.email.contains('@') {
         return Err(ApiError::BadRequest("email looks invalid".into()));
     }
-    let principal = db::fetch_principal_by_email(&state.pool, &body.email)
-        .await?
-        .ok_or(ApiError::NotFound)?;
-    let session = random_token();
-    db::create_session(&state.pool, principal.id, &hash_token(&session), 24 * 30).await?;
+    let mut dev_token = None;
+    if let Some(principal) = db::fetch_principal_by_email(&state.pool, &body.email).await? {
+        let magic = random_token();
+        db::create_magic_link(&state.pool, principal.id, &hash_token(&magic), 15).await?;
+        let link = format!(
+            "{}/app/auth/verify?token={magic}",
+            state.config.public_base_url.trim_end_matches('/'),
+        );
+        tx::magic_link(
+            state.notifications.as_ref(),
+            &principal.primary_email,
+            &link,
+        )
+        .await;
+        if cfg!(debug_assertions) {
+            dev_token = Some(magic);
+        }
+    }
     Ok(Json(SigninResp {
-        principal_id: principal.id,
-        session_token: session,
+        status: "sent".into(),
+        magic_token_dev_only: dev_token,
     }))
+}
+
+#[derive(Deserialize)]
+pub struct MagicVerifyReq {
+    pub token: String,
+}
+
+#[derive(Serialize)]
+pub struct MagicVerifyResp {
+    pub principal_id: PrincipalId,
+    pub session_token: String,
+    pub email: String,
+}
+
+/// Email sign-in, step 2: redeem the magic link for a session.
+///
+/// The token is single-use (consumed atomically) and expires 15 minutes after
+/// issue. A valid redemption proves control of the inbox.
+pub async fn magic_link_verify(
+    State(state): State<AppState>,
+    Json(body): Json<MagicVerifyReq>,
+) -> ApiResult<Json<MagicVerifyResp>> {
+    let pid = db::consume_magic_link(&state.pool, &hash_token(&body.token))
+        .await?
+        .ok_or(ApiError::Unauthorised)?;
+    let principal = db::fetch_principal(&state.pool, pid).await?;
+    let session = random_token();
+    db::create_session(&state.pool, pid, &hash_token(&session), 24 * 30).await?;
+    Ok(Json(MagicVerifyResp {
+        principal_id: pid,
+        session_token: session,
+        email: principal.primary_email,
+    }))
+}
+
+/// Revoke the caller's session server-side (so a stolen token stops working).
+pub async fn signout(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<StatusCode> {
+    if let Some(token) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+    {
+        let hash = hash_token(token);
+        let _ = db::revoke_session(&state.pool, &hash).await;
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Map the `plan` query parameter from sign-up into a concrete PlanId.

@@ -279,6 +279,23 @@ pub mod tx {
         .await;
     }
 
+    pub async fn magic_link(sink: &dyn NotificationSink, email: &str, link: &str) {
+        sink.send(OutboundMessage {
+            channel: Channel::Email,
+            to: email.into(),
+            subject: Some("Your Paschal sign-in link".into()),
+            body: format!(
+                "Click the link below to sign in to Paschal:\n\n\
+                 {link}\n\n\
+                 This link expires in 15 minutes and can be used once.\n\
+                 If you did not request this, you can safely ignore this email \
+                 \u{2014} no one can sign in without it.\n\n\
+                 \u{2014} The Paschal team"
+            ),
+        })
+        .await;
+    }
+
     pub async fn cooling_off_started(
         sink: &dyn NotificationSink,
         principal_email: &str,

@@ -539,11 +539,26 @@ export type {
 
 // --- Passwordless sign-in -------------------------------------------------
 export function signin(email: string) {
-  return request<{ principal_id: string; session_token: string }>('/v1/auth/signin', {
+  return request<{ status: string; magic_token_DEV_ONLY?: string }>('/v1/auth/signin', {
     method: 'POST',
     auth: false,
     body: JSON.stringify({ email })
   });
+}
+
+export function verifyMagicLink(token: string) {
+  return request<{ principal_id: string; session_token: string; email: string }>(
+    '/v1/auth/magic-link/verify',
+    {
+      method: 'POST',
+      auth: false,
+      body: JSON.stringify({ token })
+    }
+  );
+}
+
+export function signout() {
+  return request<void>('/v1/auth/signout', { method: 'POST' });
 }
 
 // Zero-Knowledge letters (browser-encrypted; operator stores ciphertext only)
@@ -591,10 +606,11 @@ export function getPasskeyRegisterOptions(
   plan?: string,
   tos_accepted?: boolean
 ) {
+  // No `auth: false`: when a session exists the Bearer header is attached,
+  // which the backend requires to add a passkey to an existing account.
   return request<PasskeyRegisterOptionsResp>('/v1/auth/passkey/register/options', {
     method: 'POST',
-    body: JSON.stringify({ email, plan, tos_accepted }),
-    auth: false
+    body: JSON.stringify({ email, plan, tos_accepted })
   });
 }
 

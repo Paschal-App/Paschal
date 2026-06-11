@@ -542,6 +542,16 @@ pub async fn principal_for_session(
     Ok(row.map(|r| PrincipalId(r.get("principal_id"))))
 }
 
+pub async fn revoke_session(pool: &PgPool, token_hash: &[u8]) -> Result<(), DbError> {
+    sqlx::query(
+        "UPDATE session SET revoked_at = now() WHERE token_hash = $1 AND revoked_at IS NULL",
+    )
+    .bind(token_hash)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 // ----------------------------------------------------------------------------
 // Subscriptions
 // ----------------------------------------------------------------------------

@@ -13,6 +13,7 @@
   const PUBLIC = [
     `${base}/`,
     `${base}/signin`,
+    `${base}/auth/verify`,
     `${base}/docs`,
     `${base}/co-steward/confirm`,
     `${base}/co-steward/sign-in`,

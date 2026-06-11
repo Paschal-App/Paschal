@@ -45,6 +45,7 @@ pub struct PasskeyRegisterOptionsResp {
 
 pub async fn passkey_register_options(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<PasskeyRegisterOptionsReq>,
 ) -> ApiResult<Json<PasskeyRegisterOptionsResp>> {
     if !body.email.contains('@') {
@@ -62,6 +63,21 @@ pub async fn passkey_register_options(
         let _ = db::set_tos_accepted(&state.pool, principal.id).await;
         let plan = parse_plan_param(body.plan.as_deref())?;
         db::create_subscription(&state.pool, principal.id, plan, state.config.trial_days).await?;
+    } else {
+        // Adding a passkey to an EXISTING account requires a signed-in session
+        // for that same account. Without this check, anyone knowing an email
+        // could register their own passkey and take the account over.
+        let caller = crate::auth::current_principal(&state, &headers)
+            .await
+            .map_err(|_| {
+                ApiError::Conflict(
+                    "An account with this email already exists. Sign in first to add a passkey."
+                        .into(),
+                )
+            })?;
+        if caller != principal.id {
+            return Err(ApiError::Unauthorised);
+        }
     }
 
     // Collect existing credentials to exclude (prevents re-registering same device).
@@ -251,7 +267,8 @@ pub async fn passkey_authenticate_options(
     let passkey_rows =
         db::get_passkeys_for_authentication(&state.pool, principal.id.as_uuid()).await?;
     if passkey_rows.is_empty() {
-        return Err(ApiError::NotFound);
+        // Don't reveal whether the account exists or has passkeys.
+        return Err(ApiError::Unauthorised);
     }
 
     let passkeys: Vec<Passkey> = passkey_rows
