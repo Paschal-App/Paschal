@@ -35,8 +35,11 @@ pub struct Config {
     pub max_upload_bytes: usize,
     /// Maximum total request body size (bytes) for multipart uploads.
     pub max_request_bytes: usize,
-    /// Per-IP request budget per minute. 0 disables.
+    /// Per-IP request budget per minute (global). 0 disables.
     pub rate_limit_per_minute: u32,
+    /// Tighter per-IP budget on auth endpoints (signup, signin, magic-link), on
+    /// top of the global limit, to slow credential-stuffing. 0 disables.
+    pub auth_rate_limit_per_minute: u32,
     /// Signal aggregator tick (seconds). MVP runs every few seconds for demo
     /// responsiveness; production goes minutes/hours.
     pub aggregator_tick_seconds: u64,
@@ -104,6 +107,7 @@ impl AppState {
                 max_upload_bytes: 16 * 1024 * 1024,
                 max_request_bytes: 32 * 1024 * 1024,
                 rate_limit_per_minute: 0,
+                auth_rate_limit_per_minute: 0,
             }),
         }
     }
@@ -182,6 +186,7 @@ impl AppState {
             max_upload_bytes: env_usize("MAX_UPLOAD_BYTES", 16 * 1024 * 1024),
             max_request_bytes: env_usize("MAX_REQUEST_BYTES", 32 * 1024 * 1024),
             rate_limit_per_minute: env_u32("RATE_LIMIT_PER_MINUTE", 240),
+            auth_rate_limit_per_minute: env_u32("AUTH_RATE_LIMIT_PER_MINUTE", 10),
         };
 
         // Notification backend: `stub` (default — log to file), `resend` (hosted

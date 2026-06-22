@@ -13,7 +13,7 @@
 
   let inviteEmail = $state('');
   let inviteName = $state('');
-  let cadence = $state('90');
+  let cadence = $state('7');
   let submitting = $state(false);
   let inviteResult = $state<{ buddy: Buddy; token?: string } | null>(null);
 
@@ -102,7 +102,7 @@
         label="Prompt cadence (days)"
         name="prompt_cadence_days"
         type="number"
-        help="How often we'll ask the Buddy whether you're well. Default 90."
+        help="How often we'll ask the Buddy whether you're well. Default 7."
       />
 
       <div class="row">

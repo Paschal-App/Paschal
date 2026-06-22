@@ -143,6 +143,42 @@ pub const EMBEDDED_MIGRATIONS: &[(&str, &str)] = &[
         "0017_vault_storage_region",
         include_str!("../../../migrations/0017_vault_storage_region.sql"),
     ),
+    (
+        "0018_webauthn",
+        include_str!("../../../migrations/0018_webauthn.sql"),
+    ),
+    (
+        "0019_recovery_key",
+        include_str!("../../../migrations/0019_recovery_key.sql"),
+    ),
+    (
+        "0020_zk_letter_heir",
+        include_str!("../../../migrations/0020_zk_letter_heir.sql"),
+    ),
+    (
+        "0021_heir_envelope_modes",
+        include_str!("../../../migrations/0021_heir_envelope_modes.sql"),
+    ),
+    (
+        "0022_duress_signal",
+        include_str!("../../../migrations/0022_duress_signal.sql"),
+    ),
+    (
+        "0023_duress_panic_mode",
+        include_str!("../../../migrations/0023_duress_panic_mode.sql"),
+    ),
+    (
+        "0024_magic_link_poll",
+        include_str!("../../../migrations/0024_magic_link_poll.sql"),
+    ),
+    (
+        "0025_buddy_cadence_default",
+        include_str!("../../../migrations/0025_buddy_cadence_default.sql"),
+    ),
+    (
+        "0026_self_hosted_plan",
+        include_str!("../../../migrations/0026_self_hosted_plan.sql"),
+    ),
 ];
 
 /// Session-level advisory lock key that serialises concurrent boots. Without
@@ -464,23 +500,27 @@ pub async fn principal_deletion_state(
     }))
 }
 
+/// Create a magic link and return the opaque `poll_id` the waiting tab can use
+/// to detect when the emailed link has been clicked and auto-complete sign-in.
 pub async fn create_magic_link(
     pool: &PgPool,
     principal_id: PrincipalId,
     token_hash: &[u8],
     ttl_minutes: i64,
-) -> Result<(), DbError> {
+) -> Result<Uuid, DbError> {
+    let poll_id = Uuid::new_v4();
     let expires_at = Utc::now() + ChronoDuration::minutes(ttl_minutes);
     sqlx::query(
-        "INSERT INTO magic_link (token_hash, principal_id, expires_at)
-         VALUES ($1, $2, $3)",
+        "INSERT INTO magic_link (token_hash, principal_id, expires_at, poll_id)
+         VALUES ($1, $2, $3, $4)",
     )
     .bind(token_hash)
     .bind(principal_id.as_uuid())
     .bind(expires_at)
+    .bind(poll_id)
     .execute(pool)
     .await?;
-    Ok(())
+    Ok(poll_id)
 }
 
 /// Returns the principal_id if the link is valid and unconsumed; marks it
@@ -501,6 +541,69 @@ pub async fn consume_magic_link(
     .fetch_optional(pool)
     .await?;
     Ok(row.map(|r| PrincipalId(r.get("principal_id"))))
+}
+
+/// Record that a magic link was successfully verified, so the waiting tab's
+/// poll can proceed to issue its own session.
+pub async fn mark_magic_link_poll_ready(
+    pool: &PgPool,
+    token_hash: &[u8],
+    principal_id: PrincipalId,
+) -> Result<(), DbError> {
+    sqlx::query("UPDATE magic_link SET poll_principal_id = $2 WHERE token_hash = $1")
+        .bind(token_hash)
+        .bind(principal_id.as_uuid())
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+#[derive(Debug)]
+pub enum PollResult {
+    /// Magic link not yet clicked.
+    Pending,
+    /// Magic link was clicked; principal is ready. Poll is now consumed.
+    Ready(PrincipalId),
+    /// Poll already redeemed, expired, or poll_id not found.
+    NotFound,
+}
+
+/// Atomically redeem the poll token. Returns `Ready` exactly once; subsequent
+/// calls return `NotFound`.
+pub async fn redeem_magic_link_poll(pool: &PgPool, poll_id: Uuid) -> Result<PollResult, DbError> {
+    // Atomic redeem: only succeeds if the link was clicked and not yet redeemed.
+    let row = sqlx::query(
+        "UPDATE magic_link
+            SET poll_redeemed_at = now()
+          WHERE poll_id = $1
+            AND poll_principal_id IS NOT NULL
+            AND poll_redeemed_at IS NULL
+          RETURNING poll_principal_id",
+    )
+    .bind(poll_id)
+    .fetch_optional(pool)
+    .await?;
+
+    if let Some(r) = row {
+        return Ok(PollResult::Ready(PrincipalId(r.get("poll_principal_id"))));
+    }
+
+    // Distinguish "pending" (link not yet clicked) from "not found / redeemed".
+    let exists = sqlx::query(
+        "SELECT 1 FROM magic_link
+          WHERE poll_id = $1
+            AND poll_principal_id IS NULL
+            AND poll_redeemed_at IS NULL",
+    )
+    .bind(poll_id)
+    .fetch_optional(pool)
+    .await?;
+
+    if exists.is_some() {
+        Ok(PollResult::Pending)
+    } else {
+        Ok(PollResult::NotFound)
+    }
 }
 
 // ----------------------------------------------------------------------------

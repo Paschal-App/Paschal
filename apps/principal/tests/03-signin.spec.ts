@@ -7,7 +7,14 @@
 // shown").
 
 import { test, expect } from '@playwright/test';
-import { BASE, clearSession, mockPlansApi, MOCK_SIGNUP } from './fixtures';
+import {
+  BASE,
+  clearSession,
+  mockPlansApi,
+  mockDashboardApis,
+  MOCK_SIGNUP,
+  MOCK_SIGNUP_VERIFICATION_SENT
+} from './fixtures';
 
 test.describe('Sign-in page — plan ladder (spec 12 §1)', () => {
   test.beforeEach(async ({ page }) => {
@@ -170,5 +177,57 @@ test.describe('Sign-in page — email sign-in form (spec 13 Part A)', () => {
     await page.getByRole('checkbox').check();
     await page.getByRole('button', { name: /continue/i }).click();
     await expect(page.getByText(/not a valid email address/i)).toBeVisible();
+  });
+});
+
+test.describe('Sign-in page — magic-link auto-poll (spec 13, existing account)', () => {
+  test.beforeEach(async ({ page }) => {
+    await clearSession(page);
+    await mockPlansApi(page);
+    await page.goto(BASE + '/signin', { waitUntil: 'networkidle' });
+  });
+
+  test('existing account shows the "check your email" screen with the auto-poll hint', async ({ page }) => {
+    // Signing up an address that already exists returns verification_sent + a
+    // poll_id (and NO session) — the backend emailed the owner a sign-in link.
+    await page.route('**/v1/auth/signup', route =>
+      route.fulfill({ json: MOCK_SIGNUP_VERIFICATION_SENT })
+    );
+    // Keep the poll pending so the page stays on the waiting screen.
+    await page.route('**/v1/auth/magic-link/poll', route =>
+      route.fulfill({ json: { status: 'pending' } })
+    );
+
+    await page.getByLabel('Email').fill('returning@example.com');
+    await page.getByRole('checkbox').check();
+    await page.getByRole('button', { name: /continue/i }).click();
+
+    await expect(page.getByText(/we've emailed a one-time sign-in link/i)).toBeVisible();
+    await expect(page.getByText(/sign you in automatically/i)).toBeVisible();
+  });
+
+  test('waiting tab auto-redirects to the dashboard once the link is clicked', async ({ page }) => {
+    await page.route('**/v1/auth/signup', route =>
+      route.fulfill({ json: MOCK_SIGNUP_VERIFICATION_SENT })
+    );
+    // The poll returns ready (link clicked) with a fresh session.
+    await page.route('**/v1/auth/magic-link/poll', route =>
+      route.fulfill({ json: {
+        status: 'ready',
+        session_token: 'tok-from-poll',
+        principal_id: 'pid-from-poll',
+        email: 'returning@example.com'
+      } })
+    );
+    await mockDashboardApis(page);
+
+    await page.getByLabel('Email').fill('returning@example.com');
+    await page.getByRole('checkbox').check();
+    await page.getByRole('button', { name: /continue/i }).click();
+    await expect(page.getByText(/we've emailed a one-time sign-in link/i)).toBeVisible();
+
+    // The poll fires every 3s; the first ready response should redirect us.
+    await page.waitForURL(`**${BASE}/dashboard`, { timeout: 15000 });
+    expect(page.url()).toContain('/dashboard');
   });
 });

@@ -11,7 +11,11 @@
   let error = $state<string | null>(null);
 
   $effect(() => {
-    const token = page.url.searchParams.get('token');
+    // The token lives in the URL fragment (#token=) so it never reaches server
+    // logs or Referer headers. Fall back to the query param for any links that
+    // were emailed before the switch and are still within their 15-minute TTL.
+    const hash = typeof window !== 'undefined' ? window.location.hash.slice(1) : '';
+    const token = new URLSearchParams(hash).get('token') ?? page.url.searchParams.get('token');
     if (!token) {
       status = 'error';
       error = 'This sign-in link is missing its token. Request a new one.';

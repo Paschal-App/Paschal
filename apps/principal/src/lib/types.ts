@@ -24,10 +24,15 @@ export type SubscriptionState =
 export type BuddyResponse = 'WELL' | 'WORRIED' | 'UNABLE_TO_REACH';
 
 export interface SignupResp {
-  principal_id: string;
-  session_token: string;
-  subscription_state: SubscriptionState;
+  // "active" — new account, session attached; "verification_sent" — the account
+  // already existed and a one-time sign-in link was emailed (poll `poll_id`).
+  status: string;
+  principal_id?: string;
+  session_token?: string;
+  subscription_state?: SubscriptionState;
   trial_end_at?: string;
+  // Present when status === "verification_sent".
+  poll_id?: string;
   magic_token_DEV_ONLY?: string;
 }
 

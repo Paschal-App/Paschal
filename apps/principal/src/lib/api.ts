@@ -594,10 +594,29 @@ export type {
 
 // --- Passwordless sign-in -------------------------------------------------
 export function signin(email: string) {
-  return request<{ status: string; magic_token_DEV_ONLY?: string }>('/v1/auth/signin', {
+  return request<{ status: string; poll_id: string; magic_token_DEV_ONLY?: string }>(
+    '/v1/auth/signin',
+    {
+      method: 'POST',
+      auth: false,
+      body: JSON.stringify({ email })
+    }
+  );
+}
+
+/**
+ * Poll the "check your email" waiting tab. Returns `ready` (with a session) once
+ * the emailed link is clicked, `pending` until then. The backend single-uses the
+ * poll id, so call this only while the waiting screen is shown.
+ */
+export function pollMagicLink(pollId: string) {
+  return request<
+    | { status: 'pending' }
+    | { status: 'ready'; session_token: string; principal_id: string; email: string }
+  >('/v1/auth/magic-link/poll', {
     method: 'POST',
     auth: false,
-    body: JSON.stringify({ email })
+    body: JSON.stringify({ poll_id: pollId })
   });
 }
 

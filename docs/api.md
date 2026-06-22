@@ -22,10 +22,11 @@ Content-Type: application/json
 }
 ```
 
-Response `200`:
+Response `200` — **new account** (`status: "active"`): a session is attached.
 
 ```json
 {
+  "status": "active",
   "principal_id": "prn_<uuid>",
   "session_token": "<token>",
   "subscription_state": "TRIALING",
@@ -34,9 +35,82 @@ Response `200`:
 }
 ```
 
+Response `200` — **account already exists** (`status: "verification_sent"`): no
+session is issued. A one-time sign-in link is emailed to the owner instead, and a
+`poll_id` is returned so the waiting tab can auto-complete (see *Poll the
+magic link* below).
+
+```json
+{
+  "status": "verification_sent",
+  "poll_id": "<uuid>",
+  "magic_token_DEV_ONLY": "<token>"
+}
+```
+
 Use `session_token` as the `Bearer` token for authenticated requests.
 
 > In production, `magic_token_DEV_ONLY` is not returned. The magic link is emailed to the address. In development (no SMTP configured), it is returned in the response for convenience.
+
+### Sign in (request a magic link)
+
+```
+POST /v1/auth/signin
+Content-Type: application/json
+```
+
+```json
+{ "email": "you@example.com" }
+```
+
+Response `200` — always identical whether or not the account exists, so the
+endpoint cannot be used to enumerate accounts:
+
+```json
+{ "status": "sent", "poll_id": "<uuid>", "magic_token_DEV_ONLY": "<token>" }
+```
+
+### Verify a magic link
+
+The emailed link points at `/app/auth/verify#token=<token>` — the token is in the
+URL **fragment** so it never reaches server logs or `Referer` headers. The web app
+reads it and calls:
+
+```
+POST /v1/auth/magic-link/verify
+Content-Type: application/json
+```
+
+```json
+{ "token": "<token>" }
+```
+
+Response `200`: `{ "principal_id": "...", "session_token": "...", "email": "..." }`.
+The token is single-use and expires 15 minutes after issue.
+
+### Poll the magic link
+
+While the "check your email" screen is showing, the originating tab polls with the
+`poll_id` so it signs in automatically the moment the emailed link is clicked
+(possibly on another device):
+
+```
+POST /v1/auth/magic-link/poll
+Content-Type: application/json
+```
+
+```json
+{ "poll_id": "<uuid>" }
+```
+
+Response `200` while waiting: `{ "status": "pending" }`. Once the link is clicked:
+`{ "status": "ready", "session_token": "...", "principal_id": "...", "email": "..." }`.
+The poll is single-use — after the first `ready` (or for an unknown `poll_id`) it
+returns `404`.
+
+> The email-auth endpoints (signup, signin, signout, magic-link verify/poll) are
+> rate-limited per IP by `AUTH_RATE_LIMIT_PER_MINUTE` (default 10/min) on top of
+> the global `RATE_LIMIT_PER_MINUTE`.
 
 ---
 
