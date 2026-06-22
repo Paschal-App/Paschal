@@ -141,11 +141,23 @@ pub struct SignupReq {
 
 #[derive(Serialize)]
 pub struct SignupResp {
-    pub principal_id: PrincipalId,
-    pub session_token: String,
-    pub subscription_state: String,
+    /// `"active"` — a new account was created and a session is attached below;
+    /// `"verification_sent"` — the account already existed, so a one-time
+    /// sign-in link was emailed to the owner instead (poll `poll_id` to detect
+    /// the click). The waiting tab branches on this field.
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub principal_id: Option<PrincipalId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subscription_state: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trial_end_at: Option<String>,
+    /// Present when `status == "verification_sent"`: the opaque id the waiting
+    /// tab polls so it can auto-complete when the emailed link is clicked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub poll_id: Option<Uuid>,
     /// Dev-only: returned in debug builds so the CLI can complete the flow
     /// without an SMTP server. Never serialised in release.
     #[serde(
@@ -173,11 +185,14 @@ pub async fn signup(
     if !created {
         // The account already exists: never hand a session to an unverified
         // caller (knowing the email is not proof of ownership). Email a one-time
-        // sign-in link to the real owner instead, and return a conflict.
+        // sign-in link to the real owner instead, and return a `poll_id` so the
+        // waiting tab can auto-complete when the owner clicks the link. The
+        // token rides in the URL fragment so it never reaches server logs.
         let magic = random_token();
-        db::create_magic_link(&state.pool, principal.id, &hash_token(&magic), 15).await?;
+        let poll_id =
+            db::create_magic_link(&state.pool, principal.id, &hash_token(&magic), 15).await?;
         let link = format!(
-            "{}/app/auth/verify?token={magic}",
+            "{}/app/auth/verify#token={magic}",
             state.config.public_base_url.trim_end_matches('/'),
         );
         tx::magic_link(
@@ -186,9 +201,19 @@ pub async fn signup(
             &link,
         )
         .await;
-        return Err(ApiError::Conflict(
-            "An account with this email already exists. We've emailed you a sign-in link.".into(),
-        ));
+        return Ok(Json(SignupResp {
+            status: "verification_sent".into(),
+            principal_id: None,
+            session_token: None,
+            subscription_state: None,
+            trial_end_at: None,
+            poll_id: Some(poll_id),
+            magic_token_dev_only: if cfg!(debug_assertions) {
+                Some(magic)
+            } else {
+                None
+            },
+        }));
     }
     let _ = db::set_tos_accepted(&state.pool, principal.id).await;
 
@@ -229,10 +254,12 @@ pub async fn signup(
     Metrics::inc(&state.metrics.signups_total);
 
     Ok(Json(SignupResp {
-        principal_id: principal.id,
-        session_token: session,
-        subscription_state: sub.state.as_db_str().to_string(),
+        status: "active".into(),
+        principal_id: Some(principal.id),
+        session_token: Some(session),
+        subscription_state: Some(sub.state.as_db_str().to_string()),
         trial_end_at: sub.trial_end_at.map(|t| t.to_rfc3339()),
+        poll_id: None,
         magic_token_dev_only: if cfg!(debug_assertions) {
             Some(magic)
         } else {
@@ -3042,6 +3069,10 @@ pub struct SigninReq {
 #[derive(Serialize)]
 pub struct SigninResp {
     pub status: String,
+    /// Opaque id the waiting tab polls to auto-complete when the emailed link is
+    /// clicked. Always present — a real id when the account exists, otherwise a
+    /// throwaway id, so the response can't be used to enumerate accounts.
+    pub poll_id: Uuid,
     #[serde(
         rename = "magic_token_DEV_ONLY",
         skip_serializing_if = "Option::is_none"
@@ -3062,12 +3093,16 @@ pub async fn signin(
     if !body.email.contains('@') {
         return Err(ApiError::BadRequest("email looks invalid".into()));
     }
+    // Always issue a poll_id so the waiting tab can check for the link click.
+    // If the account doesn't exist we return a throwaway id (nothing will ever
+    // mark it ready) so the response never reveals whether the account exists.
     let mut dev_token = None;
+    let mut poll_id = Uuid::new_v4();
     if let Some(principal) = db::fetch_principal_by_email(&state.pool, &body.email).await? {
         let magic = random_token();
-        db::create_magic_link(&state.pool, principal.id, &hash_token(&magic), 15).await?;
+        poll_id = db::create_magic_link(&state.pool, principal.id, &hash_token(&magic), 15).await?;
         let link = format!(
-            "{}/app/auth/verify?token={magic}",
+            "{}/app/auth/verify#token={magic}",
             state.config.public_base_url.trim_end_matches('/'),
         );
         tx::magic_link(
@@ -3082,6 +3117,7 @@ pub async fn signin(
     }
     Ok(Json(SigninResp {
         status: "sent".into(),
+        poll_id,
         magic_token_dev_only: dev_token,
     }))
 }
@@ -3106,9 +3142,13 @@ pub async fn magic_link_verify(
     State(state): State<AppState>,
     Json(body): Json<MagicVerifyReq>,
 ) -> ApiResult<Json<MagicVerifyResp>> {
-    let pid = db::consume_magic_link(&state.pool, &hash_token(&body.token))
+    let token_hash = hash_token(&body.token);
+    let pid = db::consume_magic_link(&state.pool, &token_hash)
         .await?
         .ok_or(ApiError::Unauthorised)?;
+    // Mark the poll ready so a tab waiting on the "check your email" screen can
+    // collect its own session without the user switching back to it.
+    let _ = db::mark_magic_link_poll_ready(&state.pool, &token_hash, pid).await;
     let principal = db::fetch_principal(&state.pool, pid).await?;
     let session = random_token();
     db::create_session(&state.pool, pid, &hash_token(&session), 24 * 30).await?;
@@ -3117,6 +3157,45 @@ pub async fn magic_link_verify(
         session_token: session,
         email: principal.primary_email,
     }))
+}
+
+#[derive(Deserialize)]
+pub struct MagicPollReq {
+    pub poll_id: Uuid,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum MagicPollResp {
+    Pending,
+    Ready {
+        session_token: String,
+        principal_id: PrincipalId,
+        email: String,
+    },
+}
+
+/// Email sign-in, step 3 (waiting tab): poll for the link click and, once it
+/// lands, collect a session. Single-use — returns 404 after the first redeem,
+/// and 404 for an unknown/throwaway poll_id (so it can't enumerate accounts).
+pub async fn magic_link_poll(
+    State(state): State<AppState>,
+    Json(body): Json<MagicPollReq>,
+) -> ApiResult<Json<MagicPollResp>> {
+    match db::redeem_magic_link_poll(&state.pool, body.poll_id).await? {
+        db::PollResult::Pending => Ok(Json(MagicPollResp::Pending)),
+        db::PollResult::Ready(pid) => {
+            let principal = db::fetch_principal(&state.pool, pid).await?;
+            let session = random_token();
+            db::create_session(&state.pool, pid, &hash_token(&session), 24 * 30).await?;
+            Ok(Json(MagicPollResp::Ready {
+                session_token: session,
+                principal_id: pid,
+                email: principal.primary_email,
+            }))
+        }
+        db::PollResult::NotFound => Err(ApiError::NotFound),
+    }
 }
 
 /// Revoke the caller's session server-side (so a stolen token stops working).

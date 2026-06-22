@@ -219,10 +219,18 @@ export const MOCK_CO_STEWARD = {
 };
 
 export const MOCK_SIGNUP = {
+  status: 'active',
   principal_id: 'pid-test-001',
   session_token: 'tok-test-abc',
   subscription_state: 'TRIALING',
   trial_end_at: '2026-06-30T00:00:00Z',
+};
+
+// Signup response when the account already exists: no session, just a poll id
+// the waiting tab uses to auto-complete when the emailed link is clicked.
+export const MOCK_SIGNUP_VERIFICATION_SENT = {
+  status: 'verification_sent',
+  poll_id: 'poll-test-xyz',
 };
 
 // ---------------------------------------------------------------------------

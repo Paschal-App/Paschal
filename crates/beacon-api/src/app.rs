@@ -25,20 +25,35 @@ pub fn build_router(state: AppState) -> Router {
     let max_request_bytes = state.config.max_request_bytes;
     let limiter = RateLimiter::new(state.config.rate_limit_per_minute);
 
+    // Email-auth routes get a tighter per-IP limit (10/min by default) on top of
+    // the global limit, to slow credential-stuffing and magic-link spamming.
+    let auth_limiter = RateLimiter::new(state.config.auth_rate_limit_per_minute);
+    let auth_routes = {
+        let al = auth_limiter.clone();
+        Router::new()
+            .route("/v1/auth/signup", post(routes::signup))
+            .route("/v1/auth/signin", post(routes::signin))
+            .route("/v1/auth/signout", post(routes::signout))
+            .route(
+                "/v1/auth/magic-link/verify",
+                post(routes::magic_link_verify),
+            )
+            .route("/v1/auth/magic-link/poll", post(routes::magic_link_poll))
+            .route_layer(from_fn(move |req, next| {
+                let al = al.clone();
+                async move { crate::rate_limit::apply(&al, req, next).await }
+            }))
+    };
+
     Router::new()
         // Health endpoints — no auth.
         .route("/health", get(health))
         .route("/livez", get(livez))
         .route("/readyz", get(readyz))
         .route("/metrics", get(metrics_endpoint))
-        // Auth — email + passwordless passkeys
-        .route("/v1/auth/signup", post(routes::signup))
-        .route("/v1/auth/signin", post(routes::signin))
-        .route("/v1/auth/signout", post(routes::signout))
-        .route(
-            "/v1/auth/magic-link/verify",
-            post(routes::magic_link_verify),
-        )
+        // Auth — email (merged with the dedicated auth rate limit above)
+        .merge(auth_routes)
+        // Auth — passwordless passkeys (unauthenticated ceremonies)
         .route(
             "/v1/auth/passkey/register/options",
             post(passkey::passkey_register_options),

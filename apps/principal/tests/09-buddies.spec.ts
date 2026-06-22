@@ -76,6 +76,13 @@ test.describe('Buddies page — invite form', () => {
     await expect(page.getByRole('button', { name: /invite buddy/i })).toBeEnabled();
   });
 
+  test('prompt cadence defaults to 7 days', async ({ page }) => {
+    // Migration 0025: the default Buddy prompt cadence dropped 90 → 7 days so a
+    // missed check-in is noticed in a week, not a quarter.
+    await expect(page.getByLabel('Prompt cadence (days)')).toHaveValue('7');
+    await expect(page.getByText(/default 7/i)).toBeVisible();
+  });
+
   test('successful invite shows "Buddy invited: email" banner', async ({ page }) => {
     await page.route('**/v1/principals/me/buddies', route => {
       if (route.request().method() === 'POST') {

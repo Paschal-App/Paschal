@@ -4,6 +4,7 @@
   import {
     signup,
     listPlans,
+    pollMagicLink,
     getPasskeyAuthOptions,
     verifyPasskeyAuthentication,
     ApiError,
@@ -19,6 +20,7 @@
 
   let email = $state('');
   let linkSent = $state(false);
+  let pollId = $state<string | null>(null);
   let plans = $state<PublicPlan[]>([]);
   let selected = $state<string>('estate_monthly_v2');
   let tosAccepted = $state(false);
@@ -30,6 +32,33 @@
     listPlans().then((p) => (plans = p)).catch((e) => {
       error = e instanceof ApiError ? e.problem.detail || e.problem.title : String(e);
     });
+  });
+
+  // While the "Check your email" screen is showing, poll every 3s so this tab
+  // auto-completes when the user clicks the link (possibly in another tab/device).
+  $effect(() => {
+    if (!linkSent || !pollId) return;
+    let cancelled = false;
+    const id = pollId;
+    (async () => {
+      while (!cancelled) {
+        await new Promise((r) => setTimeout(r, 3000));
+        if (cancelled) break;
+        try {
+          const r = await pollMagicLink(id);
+          if (r.status === 'ready') {
+            save({ token: r.session_token, email: r.email, principalId: r.principal_id });
+            goto(`${base}/dashboard`);
+            break;
+          }
+        } catch {
+          // Non-fatal — keep polling until the link is clicked or the tab closes.
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   });
 
   // Group plans for the ladder display.
@@ -56,16 +85,19 @@
     error = null;
     try {
       const r = await signup({ email, plan: selected, tos_accepted: tosAccepted });
-      save({ token: r.session_token, email, principalId: r.principal_id });
-      goto(`${base}/dashboard`);
-    } catch (e) {
-      if (e instanceof ApiError && e.problem.status === 409) {
-        // Account already exists — the backend emailed a one-time sign-in link
-        // to the owner rather than handing this caller a session.
-        linkSent = true;
+      if (r.session_token && r.principal_id) {
+        // New account — a session is attached, go straight in.
+        save({ token: r.session_token, email, principalId: r.principal_id });
+        goto(`${base}/dashboard`);
       } else {
-        error = e instanceof ApiError ? e.problem.detail || e.problem.title : String(e);
+        // Account already exists — the backend emailed a one-time sign-in link to
+        // the owner rather than handing this caller a session. Show the waiting
+        // screen and poll so this tab auto-completes when the link is clicked.
+        pollId = r.poll_id ?? null;
+        linkSent = true;
       }
+    } catch (e) {
+      error = e instanceof ApiError ? e.problem.detail || e.problem.title : String(e);
     } finally {
       submitting = false;
     }
@@ -330,6 +362,12 @@
           If an account exists for {email}, we've emailed a one-time sign-in link
           (expires in 15 minutes). Check your spam folder if it doesn't arrive.
         </Banner>
+        {#if pollId}
+          <p class="poll-hint dim small">
+            <span class="poll-dot" aria-hidden="true"></span>
+            This page will sign you in automatically when you click the link.
+          </p>
+        {/if}
       {/if}
       {#if error}<Banner kind="warn">{error}</Banner>{/if}
 
@@ -442,6 +480,22 @@
   .text-link { color: var(--slate); text-decoration: underline; text-underline-offset: 4px; }
   .text-link:hover { color: var(--ink); }
   .small { font-size: var(--size-caption); }
+  .poll-hint { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+  .poll-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--burgundy);
+    flex-shrink: 0;
+    animation: poll-pulse 1.6s ease-in-out infinite;
+  }
+  @keyframes poll-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.25; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .poll-dot { animation: none; }
+  }
 
   .audit {
     margin-top: var(--sp-2);

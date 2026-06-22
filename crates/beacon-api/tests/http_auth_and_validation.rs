@@ -66,7 +66,9 @@ async fn cannot_see_another_principals_vault() {
 }
 
 #[tokio::test]
-async fn zero_knowledge_tier_is_rejected_in_mvp() {
+async fn zero_knowledge_tier_is_supported() {
+    // Private (Zero-Knowledge) Vaults are a shipped feature (browser-encrypted
+    // letters, spec 14) — creating one succeeds and echoes the tier back.
     let app = common::setup().await;
     let (_, token) = common::signup_and_get_token(&app.router, "zk@example.org").await;
     let (status, body) = common::send(
@@ -78,8 +80,8 @@ async fn zero_knowledge_tier_is_rejected_in_mvp() {
         ),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(body["detail"].as_str().unwrap().contains("Zero-Knowledge"));
+    assert_eq!(status, StatusCode::OK, "{body:?}");
+    assert_eq!(body["tier"], "ZERO_KNOWLEDGE");
 }
 
 #[tokio::test]

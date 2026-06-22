@@ -77,23 +77,29 @@ impl RateLimiter {
     }
 }
 
-/// axum middleware. Skips excluded paths. Tolerant of missing ConnectInfo
-/// (e.g. in `oneshot`-driven tests).
-pub async fn middleware(
-    axum::extract::State(limiter): axum::extract::State<RateLimiter>,
-    req: Request<axum::body::Body>,
-    next: Next,
-) -> Response {
+fn rate_limited_response(retry_after_secs: u32) -> Response {
+    let mut resp = (
+        StatusCode::TOO_MANY_REQUESTS,
+        [("content-type", "application/problem+json")],
+        r#"{"type":"https://paschal.com/errors/rate_limited","title":"rate_limited","status":429,"detail":"per-IP rate limit reached"}"#.to_string(),
+    )
+        .into_response();
+    if let Ok(v) = HeaderValue::from_str(&retry_after_secs.to_string()) {
+        resp.headers_mut().insert("retry-after", v);
+    }
+    resp
+}
+
+/// Core enforcement: check the limiter for `req`'s IP and either pass through
+/// or return 429. No path exclusions — callers handle that themselves. Used
+/// both by the global [`middleware`] and the per-route auth limiter.
+///
+/// Tolerant of missing ConnectInfo (e.g. in `oneshot`-driven tests): if absent,
+/// the request passes through — production always has it.
+pub async fn apply(limiter: &RateLimiter, req: Request<axum::body::Body>, next: Next) -> Response {
     if !limiter.enabled() {
         return next.run(req).await;
     }
-    let path = req.uri().path().to_string();
-    if matches!(path.as_str(), "/health" | "/livez" | "/readyz" | "/metrics") {
-        return next.run(req).await;
-    }
-
-    // Try to pull the ConnectInfo from the request extensions. If absent
-    // (test harness path), skip rate limiting — production always has it.
     let (mut parts, body) = req.into_parts();
     let connect_info = ConnectInfo::<std::net::SocketAddr>::from_request_parts(&mut parts, &())
         .await
@@ -102,22 +108,24 @@ pub async fn middleware(
     let Some(ConnectInfo(addr)) = connect_info else {
         return next.run(req).await;
     };
-
     match limiter.check(addr.ip()) {
         Ok(()) => next.run(req).await,
-        Err(retry_after_secs) => {
-            let mut resp = (
-                StatusCode::TOO_MANY_REQUESTS,
-                [("content-type", "application/problem+json")],
-                r#"{"type":"https://paschal.com/errors/rate_limited","title":"rate_limited","status":429,"detail":"per-IP rate limit reached"}"#.to_string(),
-            )
-                .into_response();
-            if let Ok(v) = HeaderValue::from_str(&retry_after_secs.to_string()) {
-                resp.headers_mut().insert("retry-after", v);
-            }
-            resp
-        }
+        Err(secs) => rate_limited_response(secs),
     }
+}
+
+/// axum middleware. Skips excluded paths. Tolerant of missing ConnectInfo
+/// (e.g. in `oneshot`-driven tests).
+pub async fn middleware(
+    axum::extract::State(limiter): axum::extract::State<RateLimiter>,
+    req: Request<axum::body::Body>,
+    next: Next,
+) -> Response {
+    let path = req.uri().path().to_string();
+    if matches!(path.as_str(), "/health" | "/livez" | "/readyz" | "/metrics") {
+        return next.run(req).await;
+    }
+    apply(&limiter, req, next).await
 }
 
 #[cfg(test)]

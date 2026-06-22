@@ -122,7 +122,9 @@ pub async fn signup_and_get_token(router: &Router, email: &str) -> (serde_json::
         router,
         req_post(
             "/v1/auth/signup",
-            serde_json::json!({ "email": email, "plan": "monthly" }),
+            // ToS acceptance is required on signup (migration 0013 + the signup
+            // guard); the helper must send it or every account creation 400s.
+            serde_json::json!({ "email": email, "plan": "monthly", "tos_accepted": true }),
             None,
         ),
     )
